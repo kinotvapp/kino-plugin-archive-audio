@@ -6,6 +6,26 @@ audiobooks and old-time radio from the [Internet Archive](https://archive.org), 
 bottom: it is written to be copied. The video reference is
 [`kinotvapp/kino-plugin-archive`](https://github.com/kinotvapp/kino-plugin-archive).
 
+## What it looks like
+
+Kino 0.9.54 on a phone (Redmi Note 9 Pro), with this plugin installed:
+
+<table>
+  <tr>
+    <td align="center"><img src="screenshots/1-audio-section.jpg" width="220" alt="The plugin's own Audio section: tabs, today's pick and rows of square covers"><br><sub>Its own <b>Audio</b> section: tabs, today's pick, rows</sub></td>
+    <td align="center"><img src="screenshots/2-audiobooks.jpg" width="220" alt="The Audiolibros tab with LibriVox audiobooks"><br><sub>Audiobooks from LibriVox, as podcasts</sub></td>
+    <td align="center"><img src="screenshots/3-album.jpg" width="220" alt="An album page with Reproducir, Aleatorio and its track list"><br><sub>An album: play, shuffle, 15 tracks, download</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/4-player.jpg" width="220" alt="The audio player with cover, title, artist and previous/next"><br><sub>The audio player, in the plugin's colours</sub></td>
+    <td align="center"><img src="screenshots/5-quality-menu.jpg" width="220" alt="The Servidor menu offering MP3 and Ogg Vorbis"><br><sub>Every quality as a lazy copy (Servidor menu)</sub></td>
+    <td align="center"><img src="screenshots/7-settings.jpg" width="220" alt="The plugin's settings tab with the cache status line and Vaciar caché"><br><sub>Settings: cache status and an action</sub></td>
+  </tr>
+</table>
+
+<img src="screenshots/6-continue-listening.jpg" width="220" alt="Seguir escuchando on Kino's Home with the audiobook in progress"><br>
+<sub>An audiobook left half-way shows up in <b>Seguir escuchando</b> on Home, and resumes where it stopped.</sub>
+
 ## What it does
 
 | Capability / export | How |

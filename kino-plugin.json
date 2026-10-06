@@ -1,0 +1,125 @@
+{
+  "id": "archive-audio",
+  "name": "Internet Archive Audio",
+  "version": "1.0.0",
+  "apiVersion": 8,
+  "entry": "plugin.js",
+  "description": "Música libre, conciertos en vivo, audiolibros y radio antigua de archive.org",
+  "author": "kinotvapp",
+  "homepage": "https://github.com/kinotvapp/kino-plugin-archive-audio",
+  "hosts": [
+    "archive.org",
+    "*.archive.org"
+  ],
+  "capabilities": [
+    "search",
+    "home",
+    "browse",
+    "episodes",
+    "resolve",
+    "download"
+  ],
+  "color": "#2EC4B6",
+  "icon": "icon.png",
+  "section": {
+    "label": "Audio"
+  },
+  "theme": {
+    "accent": "#2EC4B6",
+    "onAccent": "#04201D",
+    "background": "#0B0F14",
+    "surface": "#16202A",
+    "highlight": "#F4B860"
+  },
+  "debug": false,
+  "telemetry": true,
+  "settings": [
+    {
+      "key": "about",
+      "label": "Internet Archive Audio",
+      "type": "section",
+      "hint": "Música libre, conciertos en vivo, audiolibros y radio antigua de archive.org: de dominio público o con licencia libre."
+    },
+    {
+      "key": "quality",
+      "label": "Calidad",
+      "type": "select",
+      "default": "standard",
+      "options": [
+        {
+          "value": "standard",
+          "label": "Normal (MP3)"
+        },
+        {
+          "value": "light",
+          "label": "Liviana (64 kbps)"
+        },
+        {
+          "value": "lossless",
+          "label": "Sin pérdida (FLAC)"
+        }
+      ]
+    },
+    {
+      "key": "bookLang",
+      "label": "Idioma de los audiolibros",
+      "type": "select",
+      "default": "all",
+      "options": [
+        {
+          "value": "all",
+          "label": "Todos"
+        },
+        {
+          "value": "spa",
+          "label": "Español"
+        },
+        {
+          "value": "eng",
+          "label": "Inglés"
+        },
+        {
+          "value": "ita",
+          "label": "Italiano"
+        },
+        {
+          "value": "por",
+          "label": "Portugués"
+        }
+      ]
+    },
+    {
+      "key": "liveShows",
+      "label": "Conciertos en vivo",
+      "type": "toggle",
+      "default": true
+    },
+    {
+      "key": "extraCollection",
+      "label": "Colección extra",
+      "type": "text",
+      "hint": "Identificador o dirección de una colección de archive.org"
+    },
+    {
+      "key": "cacheSection",
+      "label": "Caché",
+      "type": "section",
+      "hint": "Las listas de pistas que abres se guardan 24 horas en tu aparato, para no pedirlas dos veces a archive.org."
+    },
+    {
+      "key": "cache",
+      "label": "Estado",
+      "type": "status"
+    },
+    {
+      "key": "clearCache",
+      "label": "Vaciar caché",
+      "type": "action",
+      "confirm": "¿Vaciar la caché de álbumes?"
+    }
+  ],
+  "signature": {
+    "authorKey": "82b87b938e0a95b142467c815a8823cb54310a13a828c3c4c77b1eda43294ae6",
+    "value": "d2be22dae23756ce0944ebb2048ea7cb481108b1b90230708c33fc438ff554e9efd59dd55d5ed8817823d205989e68c233c932f8658149b5fdf453e54282f309"
+  }
+}

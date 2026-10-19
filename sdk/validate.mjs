@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Checks a plugin the way Kino does, without installing it:
 //   node sdk/validate.mjs <plugin folder>
-//     the manifest (every rule in contract.json, the app's own Spanish messages), the entry file,
+//     the manifest (every rule in contract.json, the app's own messages), the entry file,
 //     and that every declared capability is an exported function (the app refuses the install
 //     otherwise).
 //   node sdk/validate.mjs <plugin folder> --run <function> [argument] [cursor] [--config k=v] [--replay file]
@@ -18,12 +18,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { checkOutput, checkSettingsOutput, contract, kb, requiredExports, validateManifest } from "./contract.mjs";
+import { checkOutput, checkSettingsOutput, contract, englishCoverage, fetchAnyHost, kb, requiredExports, validateManifest } from "./contract.mjs";
 import { resolvePalette } from "./palette.mjs";
 import { decodeCipherKey } from "./seal.mjs";
 import { createKino, signingLane } from "./kino-shim.mjs";
+import { loadPlugin, missingGlobalLines, scanMissingGlobals } from "./sandbox.mjs";
 import { call, callMeta, markLiveSearch, metaQueryForItem, parseArgs, resolveFirstLiveRef, signExportProblem, unmarkedSearchNote } from "./run.mjs";
 import { loadPlaylist } from "./live-playlist.mjs";
+import { PANEL_ICONS, PANEL_ICON_DEFAULT, panelIconProblem, settingsLayout } from "./panel.mjs";
 import { fingerprint, normalizeBinding, verifyEntry } from "./seal.mjs";
 
 // Every return carries { ok, problems, drops, output, consent, notes } — even the early ones, before
@@ -71,6 +73,8 @@ export function consentLines(m, { authorFingerprint = null } = {}) {
       : m.capabilities.includes("subtitles") ? "Puede reproducir video y traer subtítulos desde cualquier servidor que indique"
       : "Puede reproducir video desde cualquier servidor que indique", true);
   }
+  // fetchHosts "any" at apiVersion 9 (Kino 0.9.55): PluginConsent.FETCH_HOSTS_LINE, in red.
+  if (fetchAnyHost(m)) line(contract.manifest.fetchHosts.consentLine, true);
   return out;
 }
 
@@ -214,6 +218,11 @@ export function unguardedServiceNotes(source) {
       notes.push(`kino.${name} existe desde Kino ${contract.additiveFromApp["kino." + name]}: comprueba typeof kino.${name} === "function" antes de usarlo, o el plugin falla en versiones anteriores`);
     }
   }
+  // Kino 0.9.55: kino.meta({ type, title }) — an older Kino answers invalid_request (no ids).
+  const byTitle = /\bkino\s*\.\s*meta\s*\(\s*\{[^}]*\btitle\s*[:,}]/.test(source);
+  if (byTitle && !/\bkino\s*\.\s*meta\s*\.\s*byTitle\b/.test(source)) {
+    notes.push(`kino.meta con title (sin ids) existe desde Kino ${contract.additiveFromApp["kino.meta.byTitle"]}: comprueba kino.meta.byTitle === true antes; en versiones anteriores responde invalid_request`);
+  }
   return notes;
 }
 
@@ -240,6 +249,7 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
   if (!checked.ok) return refused([`kino-plugin.json: ${checked.field}: ${checked.message}`]);
   const m = checked.manifest;
   const notes = [];
+  const warnings = [];
   let authorFingerprint = null;
   if (!m.discoverable) notes.push("No aparecerá en la búsqueda de Kino");
   for (const note of catalogOnlyNotes(m)) notes.push(note);
@@ -252,23 +262,32 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
   if (JSON.parse(manifestText).hosts.length > legacy.value) {
     notes.push(`Más de ${legacy.value} hosts: Kino ${legacy.refusedUpToApp} o anterior rechaza este plugin; necesita Kino ${legacy.noLimitFromApp} o superior`);
   }
-  // The app honors fetchHosts only on a plugin it converted from a Nuvio scraper (never on one written by hand).
   if (m.browser) {
     notes.push(m.browserPages
       ? "kino.browser.capture and kino.browser.page only work in the app (a hidden WebView); here they answer browser_unavailable, so test on a device. Kino never solves captchas: a page that asks to confirm a human is there answers blocked"
       : "kino.browser.capture only works in the app (a hidden WebView); here it answers browser_unavailable, so test resolve on a device. To read pages with kino.browser.page declare \"browser\": \"pages\"");
   }
-  if (m.fetchHostsAny) notes.push("fetchHosts solo tiene efecto en plugins convertidos desde Nuvio; en tu plugin se ignora");
+  // Kino 0.9.55's English texts (labelEn, hintEn, confirmEn, section.labelEn): only said once the plugin uses them.
+  const en = englishCoverage(m);
+  if (en.english > 0) {
+    notes.push(en.missing.length
+      ? `English texts: ${en.english} of ${en.total}; without an English version (Kino shows them in Spanish): ${en.missing.slice(0, 8).join(", ")}${en.missing.length > 8 ? ` and ${en.missing.length - 8} more` : ""}`
+      : `English texts: ${en.english} of ${en.total}`);
+    notes.push(`Kino ${contract.settings.english.fromApp} or later shows the English texts when the app is in English; an older Kino ignores them and shows the usual ones`);
+  }
+  // The app honors fetchHosts on a plugin it converted from a Nuvio scraper, and on one written by hand only from
+  // apiVersion 9 (Kino 0.9.55; there it is a red consent line, see consentLines).
+  if (m.fetchHostsAny && !fetchAnyHost(m)) notes.push(`fetchHosts only takes effect on plugins converted from Nuvio or, on one written by hand, from apiVersion ${contract.manifest.fetchHosts.handWrittenApiVersion} (Kino ${contract.additiveFromApp["kino.fetchAnyHost"]}); in your plugin it is ignored`);
   if (m.secrets && Object.keys(m.secrets).length) {
-    notes.push("No se puede comprobar aquí para qué repositorio se sellaron los secretos: Kino lo comprueba al instalar. Además, solo se abren si la persona instala el plugin desde su rama principal, sin @rama. Y desde una URL del manifest (kino-plugin.json fuera de GitHub) Kino rechaza el plugin: los sellos son de un repositorio.");
+    notes.push("Which repository the secrets were sealed for can't be checked here: Kino checks it at install. They also only open when the person installs the plugin from its default branch, without @branch. And from a manifest URL (kino-plugin.json outside GitHub) Kino refuses the plugin: seals belong to a repository.");
   }
   const sg = contract.manifest.signature;
   if (m.apiVersion === sg.apiVersion) {
-    notes.push(`apiVersion ${m.apiVersion}: requiere Kino ${sg.fromApp} o superior; las versiones anteriores lo rechazan con «Este plugin necesita una versión más nueva de Kino»`);
+    notes.push(`apiVersion ${m.apiVersion}: needs Kino ${sg.fromApp} or later; older versions refuse it with "This plugin needs a newer version of Kino"`);
   } else if (m.apiVersion > sg.apiVersion) {
     // Above the signed entry's version: the Kino release each one first ships in (contract.json apiVersionFromApp).
     const fromApp = contract.apiVersionFromApp[String(m.apiVersion)];
-    notes.push(`apiVersion ${m.apiVersion}: requiere Kino ${fromApp} o superior; las versiones anteriores lo rechazan con «Este plugin necesita una versión más nueva de Kino»`);
+    notes.push(`apiVersion ${m.apiVersion}: needs Kino ${fromApp} or later; older versions refuse it with "This plugin needs a newer version of Kino"`);
   }
   const entry = join(dir, m.entry);
   if (!existsSync(entry)) return { ...refused([`entry ${m.entry} not found`]), consent: consentLines(m), notes };
@@ -299,6 +318,33 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
     }
   }
   const consent = consentLines(m, { authorFingerprint });
+  // apiVersion 9's player panel button and settings layout: below it Kino ignores both fields, so the author is told.
+  const layoutDrops = [];
+  const declared = JSON.parse(manifestText);
+  const panelApi = contract.manifest.panel.apiVersion;
+  if (m.apiVersion < panelApi) {
+    for (const field of ["panel", "settingsLayout"]) if (declared[field] !== undefined) notes.push(`"${field}" needs apiVersion ${panelApi} (Kino ${contract.apiVersionFromApp[String(panelApi)]}): at apiVersion ${m.apiVersion} Kino ignores it`);
+  }
+  if (m.panel) {
+    if (m.panel.icon && !PANEL_ICONS.includes(m.panel.icon)) notes.push(`panel.icon "${m.panel.icon}" is not a predefined icon: Kino draws "${PANEL_ICON_DEFAULT}" (${PANEL_ICONS.join(", ")})`);
+    if (m.panel.iconFile) {
+      // The installer refuses a missing or bad panel icon (unlike the plugin's own icon): the author asked for it.
+      const file = join(dir, m.panel.iconFile);
+      if (!existsSync(file)) problems.push(`Couldn't download the panel icon. ${m.panel.iconFile} was not found`);
+      else {
+        const bytes = readFileSync(file);
+        const refusal = panelIconProblem(bytes);
+        if (refusal) problems.push(`${m.panel.iconFile}: ${refusal}`);
+      }
+    }
+  }
+  if (m.settingsLayout !== undefined && m.apiVersion >= contract.manifest.settingsLayout.apiVersion) {
+    // Kino ignores an unknown or repeated setting and still shows the form; here it is a mistake in the manifest, so it fails.
+    const layout = settingsLayout(m.settingsLayout, m.settings);
+    // Uncapped: a bad key after the app's 10 logged lines still fails.
+    problems.push(...layout.problems);
+    for (const line of layout.log) if (!/unknown setting|placed twice/.test(line)) layoutDrops.push(line);
+  }
   if (m.icon && existsSync(join(dir, m.icon)) && statSync(join(dir, m.icon)).size > contract.manifest.iconMaxBytes) problems.push(`${m.icon} is bigger than ${kb(contract.manifest.iconMaxBytes)}: Kino skips it`);
   // A typed cipher key's local stand-in must be a real key: the app refuses the install otherwise.
   const secretsFile = join(dir, ".kino-secrets.json");
@@ -312,7 +358,7 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
     }
   }
   const scratch = mkdtempSync(join(tmpdir(), "kino-validate-"));
-  const drops = [];
+  const drops = [...layoutDrops];
   let output = null;
   try {
     // Inside the try too: an invalid --replay path (or any other setup failure) must become a
@@ -320,10 +366,14 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
     // The same local stand-in run.mjs reads: a plugin with `secrets` gets its plain values from it.
     const { kino, servers } = createKino(m, { config, replay: replay && resolve(replay), fetchImpl, secretsFile: join(dir, ".kino-secrets.json") });
     // sign() runs in the signing lane, as in run.mjs and the app: no network, storage, cookies or sleep.
-    globalThis.kino = run === "sign" ? signingLane(kino) : kino;
-    const copy = join(scratch, "plugin.mjs");
-    writeFileSync(copy, readFileSync(entry));
-    const plugin = await import(pathToFileURL(copy).href);
+    const pluginKino = run === "sign" ? signingLane(kino) : kino;
+    globalThis.kino = pluginKino;
+    // What Node has and Kino lacks (setTimeout, fetch, Buffer...): named even where no test reaches, then the entry runs in the
+    // kit's sandbox, where touching one is a ReferenceError as in the app (sandbox.mjs).
+    warnings.push(...missingGlobalLines(scanMissingGlobals(readFileSync(entry, "utf8"))));
+    const loaded = await loadPlugin(entry, pluginKino);
+    if (!loaded.sandboxed) notes.push("running without the sandbox (KINO_SDK_NO_SANDBOX=1): the plugin can see Node's globals that Kino lacks");
+    const plugin = loaded.plugin;
     // download/drm export nothing; channels exports liveCategories + liveChannels (guide optional).
     const missing = requiredExports(m.capabilities, m.settings, m).filter((f) => typeof plugin[f] !== "function");
     if (missing.length) problems.push(`the plugin doesn't export ${missing.join(", ")}: Kino refuses the install ("le falta ${missing.sort().join(", ")}")`);
@@ -401,7 +451,7 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
-  return { ok: problems.length === 0, problems, drops, output, consent, notes };
+  return { ok: problems.length === 0, problems, drops, output, consent, notes, warnings };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -431,8 +481,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     }
     result.drops.forEach((d) => console.error(`[dropped by Kino] ${d}`));
     result.problems.forEach((p) => console.error(`✗ ${p}`));
+    (result.warnings || []).forEach((w) => console.error(`! ${w}`));
     result.notes.forEach((n) => console.error(`· ${n}`));
-    if (result.ok) console.error("✓ Kino would accept this plugin" + (result.drops.length ? ` (${result.drops.length} entries dropped, see above)` : ""));
+    if (result.ok) console.error("✓ Kino would accept this plugin" + (result.drops.length ? ` (${result.drops.length} entries dropped, see above)` : "") + (result.warnings.length ? ` (${result.warnings.length} warning${result.warnings.length === 1 ? "" : "s"} above: the install works, the call fails where the plugin uses a global Kino lacks)` : ""));
     process.exitCode = result.ok ? 0 : 1;
   }
 }

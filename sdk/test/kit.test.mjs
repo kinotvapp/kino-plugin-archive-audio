@@ -1,5 +1,6 @@
 // node --test plugins/sdk/test/kit.test.mjs   (Node 18+)
 // The kit against the same rules and vectors the app's JVM tests use.
+import { loadPlugin, missingGlobalLines, scanMissingGlobals } from "../sandbox.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -9,8 +10,8 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { checkOutput, checkSettingsOutput, contract, imageVerdict, markSearchHits, metaAnswer, optInt, requiredExports, segmentSkip, segmentsAnswer, validateManifest } from "../contract.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { checkOutput, checkSettingsOutput, mediaOf, contract, englishCoverage, imageVerdict, localizedSettings, sectionLabel, markSearchHits, metaAnswer, optInt, requiredExports, segmentSkip, segmentsAnswer, validateManifest } from "../contract.mjs";
 import { createKino, errorReport, shownSentence, signingLane } from "../kino-shim.mjs";
 import { filterRelevant, shortQuery, sortBySimilarity } from "../kino-rank.mjs";
 import { contrast, deltaE, formatRatio, luminance, resolvePalette } from "../palette.mjs";
@@ -29,36 +30,40 @@ const manifest = (extra = {}) => JSON.stringify({
   hosts: ["example.com"], capabilities: ["search", "resolve"], ...extra,
 });
 
+// These tests read files of the Kino repo itself (docs/plugins/, plugins/archive-org, its .gitignore). A template does
+// not carry them, so they are skipped here and run in the Kino repo.
+const NEEDS_KINO_REPO = "needs files of the Kino repo that this template does not have";
+
 test("contract.json is the one the app pins", () => {
-  assert.equal(contract.apiVersion, 8);
+  assert.equal(contract.apiVersion, 11);
   // apiVersion 5 stays what Kino 0.9.45 made it: the author-signed entry, nothing else.
   assert.equal(contract.manifest.signature.apiVersion, 5);
-  assert.deepEqual(contract.capabilities.names, ["search", "home", "browse", "episodes", "resolve", "download", "drm", "channels", "migrate", "scopedSearch", "meta", "subtitles", "tracking", "segments"]);
-  assert.deepEqual(contract.capabilities.declarative, ["download", "drm", "scopedSearch"]);
+  assert.deepEqual(contract.capabilities.names, ["search", "home", "browse", "episodes", "resolve", "download", "drm", "channels", "migrate", "scopedSearch", "meta", "subtitles", "tracking", "segments", "playlists", "externalResolve"]);
+  assert.deepEqual(contract.capabilities.declarative, ["download", "drm", "scopedSearch", "externalResolve"]);
   assert.deepEqual(contract.permissions, []);
 });
 
 test("manifest rules and Spanish messages match the app", () => {
   assert.equal(validateManifest(manifest()).ok, true);
   const cases = [
-    [{ permissions: ["local-network"] }, "permissions", "permiso desconocido: local-network"],
-    [{ settings: [{ key: "Server", label: "x", type: "text" }] }, "settings", "El ajuste #1 tiene una clave inválida"],
-    [{ settings: [{ key: "k", label: "x", type: "toggle", required: true }] }, "settings", 'El ajuste "k" no puede ser obligatorio'],
-    [{ settings: [{ key: "k", label: "x", type: "select" }] }, "settings", 'El ajuste "k" necesita opciones'],
-    [{ settings: [{ key: "k", label: "x", type: "url", default: "http://127.0.0.1/" }] }, "settings", 'El ajuste "k" de tipo url no puede tener valor por defecto: usa "hint"'],
-    [{ settings: [{ key: "k", label: "x", type: "url", default: "http://192.168.1.1" }] }, "settings", 'El ajuste "k" de tipo url no puede tener valor por defecto: usa "hint"'],
-    [{ settings: [{ key: "k", label: "x", type: "url", default: "" }] }, "settings", 'El ajuste "k" de tipo url no puede tener valor por defecto: usa "hint"'],
-    [{ capabilities: ["search"] }, "capabilities", 'El plugin debe declarar "resolve"'],
-    [{ capabilities: ["search", "resolve", "download"] }, "capabilities", "Esta capacidad necesita apiVersion 2"],
-    [{ capabilities: ["search", "resolve", "drm"] }, "capabilities", "Esta capacidad necesita apiVersion 2"],
-    [{ hosts: ["192.168.1.1"] }, "hosts", 'El dominio "192.168.1.1" no está permitido'],
-    [{ hosts: [{ host: "x.example.com", insecureHttp: true }] }, "hosts", 'Un host con "insecureHttp" necesita apiVersion 2'],
-    [{ apiVersion: 2, hosts: [{ host: "*.example.com", insecureHttp: true }] }, "hosts", 'Un host con "insecureHttp" no puede tener comodín ("*.")'],
-    [{ apiVersion: 2, hosts: [{ host: "nas.local", insecureHttp: true }] }, "hosts", 'El dominio "nas.local" no está permitido'],
-    [{ id: "live" }, "id", 'El id "live" está reservado por Kino'],
+    [{ permissions: ["local-network"] }, "permissions", "unknown permission: local-network"],
+    [{ settings: [{ key: "Server", label: "x", type: "text" }] }, "settings", "Setting #1 has an invalid key"],
+    [{ settings: [{ key: "k", label: "x", type: "toggle", required: true }] }, "settings", 'The setting "k" can\'t be required'],
+    [{ settings: [{ key: "k", label: "x", type: "select" }] }, "settings", 'The setting "k" needs options'],
+    [{ settings: [{ key: "k", label: "x", type: "url", default: "http://127.0.0.1/" }] }, "settings", 'The setting "k" of type url can\'t have a default value: use "hint"'],
+    [{ settings: [{ key: "k", label: "x", type: "url", default: "http://192.168.1.1" }] }, "settings", 'The setting "k" of type url can\'t have a default value: use "hint"'],
+    [{ settings: [{ key: "k", label: "x", type: "url", default: "" }] }, "settings", 'The setting "k" of type url can\'t have a default value: use "hint"'],
+    [{ capabilities: ["search"] }, "capabilities", 'The plugin must declare "resolve"'],
+    [{ capabilities: ["search", "resolve", "download"] }, "capabilities", 'The "download" capability needs apiVersion 2'],
+    [{ capabilities: ["search", "resolve", "drm"] }, "capabilities", 'The "drm" capability needs apiVersion 2'],
+    [{ hosts: ["192.168.1.1"] }, "hosts", 'The domain "192.168.1.1" is not allowed'],
+    [{ hosts: [{ host: "x.example.com", insecureHttp: true }] }, "hosts", 'A host with "insecureHttp" needs apiVersion 2'],
+    [{ apiVersion: 2, hosts: [{ host: "*.example.com", insecureHttp: true }] }, "hosts", 'A host with "insecureHttp" can\'t have a wildcard ("*.")'],
+    [{ apiVersion: 2, hosts: [{ host: "nas.local", insecureHttp: true }] }, "hosts", 'The domain "nas.local" is not allowed'],
+    [{ id: "live" }, "id", 'The id "live" is reserved by Kino'],
     // The app's version regex bounds each segment to 6 digits (Regex("^(0|[1-9]\\d{0,5})...")); a
     // hand-typed unbounded copy would wrongly accept this.
-    [{ version: "1234567.0.0" }, "version", 'El campo "version" debe ser del tipo 1.2.3'],
+    [{ version: "1234567.0.0" }, "version", 'The "version" field must look like 1.2.3'],
   ];
   for (const [extra, field, message] of cases) {
     assert.deepEqual(validateManifest(manifest(extra)), { ok: false, field, message }, JSON.stringify(extra));
@@ -85,8 +90,8 @@ test("apiVersion 2: empty hosts validate only with a url setting, as the app rul
   assert.deepEqual(ok.manifest.hosts, []);
   assert.equal(contract.manifest.noHostsApiVersion, 2);
   assert.deepEqual(validateManifest(manifest({ hosts: [], settings: [server] })),
-    { ok: false, field: "hosts", message: 'El campo "hosts" debe tener al menos 1 dominio' });
-  const noUrl = { ok: false, field: "hosts", message: 'El campo "hosts" solo puede estar vacío si el plugin tiene un ajuste de tipo "url"' };
+    { ok: false, field: "hosts", message: 'The "hosts" field must have at least 1 domain' });
+  const noUrl = { ok: false, field: "hosts", message: 'The "hosts" field can only be empty if the plugin has a setting of type "url"' };
   assert.deepEqual(validateManifest(manifest({ apiVersion: 2, hosts: [] })), noUrl);
   assert.deepEqual(validateManifest(manifest({ apiVersion: 2, hosts: [], settings: [{ key: "user", label: "Usuario", type: "text" }] })), noUrl);
 });
@@ -100,7 +105,7 @@ test("hosts: no upper limit (21, 100, 500 accepted); only the 16 KB manifest cap
     assert.deepEqual(r.manifest.hosts, hosts);
   }
   const tooBig = Array.from({ length: 1000 }, (_, i) => `host-number-${i + 1}.example.com`);
-  assert.deepEqual(validateManifest(manifest({ hosts: tooBig })), { ok: false, field: "kino-plugin.json", message: "El manifiesto pesa más de 16 KB" });
+  assert.deepEqual(validateManifest(manifest({ hosts: tooBig })), { ok: false, field: "kino-plugin.json", message: "The manifest is over 16 KB" });
 });
 
 test("validate() warns, without refusing, that more than 20 hosts needs Kino 0.9.45", async () => {
@@ -147,14 +152,14 @@ test("validate() reports the palette guardrails as notes", async () => {
     writeFileSync(join(dir, "plugin.js"), "export async function search(){ return [] }\nexport async function resolve(){ return { url: 'https://example.com/a' } }");
     const r = await validate(dir);
     assert.deepEqual(r.problems, []);
-    assert.ok(r.notes.includes("theme.accent: se parece demasiado al rojo de Kino; se usan los colores de Kino para accent y onAccent"), JSON.stringify(r.notes));
+    assert.ok(r.notes.includes("theme.accent: is too close to Kino's red; Kino's colors are used for accent and onAccent"), JSON.stringify(r.notes));
     assert.equal(r.notes.filter((n) => n.startsWith("theme.")).length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("the archive-org plugin passes the kit's checks", async () => {
+test("the archive-org plugin passes the kit's checks", { skip: NEEDS_KINO_REPO }, async () => {
   const r = await validate(archive);
   assert.deepEqual(r.problems, []);
 });
@@ -187,13 +192,13 @@ test("validate.mjs's CLI reports the app's refusal instead of crashing on the mo
     const badManifest = runValidateCli([dir]);
     assert.equal(badManifest.code, 1);
     assert.ok(!looksLikeAStackTrace(badManifest.stderr), `unexpected stack trace:\n${badManifest.stderr}`);
-    assert.match(badManifest.stderr, /El campo/);
+    assert.match(badManifest.stderr, /field/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("validate() reports a problem instead of throwing when --replay points at a missing file", async () => {
+test("validate() reports a problem instead of throwing when --replay points at a missing file", { skip: NEEDS_KINO_REPO }, async () => {
   const r = await validate(archive, { run: "search", args: ["algo"], replay: join(here, "does-not-exist.json") });
   assert.equal(r.ok, false);
   assert.ok(r.problems.some((p) => p.includes("not found")));
@@ -289,7 +294,7 @@ test("key pairs: handles stay in their own kino, no Node alias, the app's errors
   assert.throws(() => first.generateKeyPair(), cryptoError("unknown key type"));
   assert.throws(() => first.generateKeyPair({ type: "ec", namedCurve: "P-521" }), cryptoError("unknown curve"));
   assert.throws(() => first.sign({ key: x.privateKey, data: "a" }), cryptoError("x25519 key doesn't sign"));
-  assert.throws(() => first.sign({ key: privateKey, data: "a", hash: "SHA-256" }), cryptoError("takes no hash"));
+  assert.throws(() => first.sign({ key: privateKey, data: "a", hash: "SHA-256" }), cryptoError("does not take a hash"));
   assert.throws(() => first.sign({ key: p256.privateKey, data: "a", hash: "SHA-1" }), cryptoError("signature hash"));
   assert.throws(() => first.sign({ key: p256.privateKey, data: "a", format: "raw" }), cryptoError("signature format"));
   assert.throws(() => first.sign({ key: {}, data: "x" }), cryptoError('missing "key"'));
@@ -677,9 +682,10 @@ test("fetch v2: bodies, cookies, manual redirects, hidden set-cookie, binary, ty
     assert.equal(seen[0].body, "user=ana%20mar%C3%ADa&pass=a%26b");
     assert.equal(seen[0].type, "application/x-www-form-urlencoded");
     assert.equal(seen[1].body, '{"q":1}');
-    await assert.rejects(kino.fetch("https://evil.example/"), (e) => e.code === "host_not_allowed");
-    await assert.rejects(kino.fetch("http://example.com/"), (e) => e.code === "host_not_allowed");
-    await assert.rejects(kino.fetch("http://10.0.2.2:9999/"), (e) => e.code === "host_not_allowed");
+    // Kino 0.9.55: the refused host rides in e.host (contract.json fetch.errorHostField).
+    await assert.rejects(kino.fetch("https://evil.example/"), (e) => e.code === "host_not_allowed" && e.host === "evil.example");
+    await assert.rejects(kino.fetch("http://example.com/"), (e) => e.code === "host_not_allowed" && e.host === "example.com");
+    await assert.rejects(kino.fetch("http://10.0.2.2:9999/"), (e) => e.code === "host_not_allowed" && e.host === "10.0.2.2");
     await assert.rejects(kino.fetch("https://example.com/", { method: "TRACE" }), (e) => e.code === "invalid_request");
     await assert.rejects(kino.fetch("https://example.com/", { body: { weird: 1 }, method: "POST" }), (e) => e.code === "invalid_request");
     await assert.rejects(kino.fetch("https://example.com/", { method: "POST", body: "x".repeat(1100000) }), (e) => e.code === "too_large");
@@ -979,7 +985,7 @@ function dtsPath() {
 // kino.d.ts's header claims its numeric comments "come from contract.json"; nothing enforced that
 // claim until now. This ties each documented number to the contract value it describes, so the two
 // can't silently drift apart.
-test("kino.d.ts's documented numbers match contract.json", () => {
+test("kino.d.ts's documented numbers match contract.json", { skip: NEEDS_KINO_REPO }, () => {
   const dts = readFileSync(dtsPath(), "utf8");
   const c = contract;
   const kb = (bytes) => (bytes % (1024 * 1024) === 0 ? `${bytes / 1024 / 1024} MB` : `${bytes / 1024} KB`);
@@ -1012,7 +1018,7 @@ test("kino.d.ts's documented numbers match contract.json", () => {
   for (const needle of mustContain) assert.ok(dts.includes(needle), `kino.d.ts is out of date with contract.json: missing "${needle}"`);
 });
 
-test("kino.d.ts's meta typings carry contract.json's meta rules", () => {
+test("kino.d.ts's meta typings carry contract.json's meta rules", { skip: NEEDS_KINO_REPO }, () => {
   const dts = readFileSync(dtsPath(), "utf8");
   const c = contract, m = contract.output.meta;
   const block = dts.slice(dts.indexOf("interface KinoMetaQuery"), dts.indexOf("type KinoMetaFn"));
@@ -1057,8 +1063,9 @@ function declaredKino() {
   return out;
 }
 
-test("kino.d.ts declares exactly what the kit's kino has", () => {
-  const { kino } = createKino(JSON.parse(manifest()));
+test("kino.d.ts declares exactly what the kit's kino has", { skip: NEEDS_KINO_REPO }, () => {
+  // At the highest apiVersion, so members gated on it (kino.meta.byTitle, apiVersion 9) are there too.
+  const { kino } = createKino(JSON.parse(manifest({ apiVersion: contract.maxApiVersion })));
   const out = new Set();
   const walk = (o, p) => Object.keys(o).forEach((k) => {
     const v = o[k];
@@ -1076,11 +1083,19 @@ test("kino.d.ts declares exactly what the kit's kino has", () => {
   assert.deepEqual([...out].sort(), declared.filter((m) => !conditional.includes(m)).sort());
 });
 
+test("kino.seed in the kit answers nothing, never throws, and keeps the contract's keys and limits", () => {
+  const { kino } = createKino(JSON.parse(manifest({ apiVersion: contract.maxApiVersion })));
+  assert.equal(typeof kino.seed, "function");
+  for (const bad of [undefined, null, 7, "x", [], {}, { sn: "a" }, { sn: "a", userId: "b", userToken: "   " }, { sn: "a".repeat(contract.kinoSeed.maxValueChars + 1), userId: "b", userToken: "c" }]) assert.equal(kino.seed(bad), undefined);
+  assert.equal(kino.seed({ sn: "a", userId: "b", userToken: "c", extra: { nested: true } }), undefined);
+  assert.deepEqual(contract.kinoSeed.required.filter((k) => !contract.kinoSeed.allowed.includes(k)), []);
+});
+
 test("telemetry: apiVersion 6 boolean, a consent line, and kino.log.report writes a line", () => {
   assert.equal(validateManifest(manifest({ apiVersion: 6, telemetry: true })).manifest.telemetry, true);
   assert.equal(validateManifest(manifest({ apiVersion: 6 })).manifest.telemetry, false);
   assert.equal(validateManifest(manifest({ apiVersion: 5, telemetry: "yes" })).manifest.telemetry, false);
-  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, telemetry: "yes" })), { ok: false, field: "telemetry", message: 'El campo "telemetry" debe ser true, false o "verbose"' });
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, telemetry: "yes" })), { ok: false, field: "telemetry", message: 'The "telemetry" field must be true, false or "verbose"' });
   assert.deepEqual(consentLines(validateManifest(manifest({ apiVersion: 6, telemetry: true })).manifest),
     [{ text: "Comparte con Kino registros de errores y datos técnicos de algunas reproducciones para corregir fallas", danger: false }]);
   const { kino } = createKino(validateManifest(manifest({ apiVersion: 6, telemetry: true })).manifest);
@@ -1114,9 +1129,9 @@ test("--retry takes an optional HTTP status", () => {
 
 test("apiVersion 3: channels validates only on v3, and needs liveCategories + liveChannels exported", async () => {
   const caps = ["home", "resolve", "channels"];
-  assert.deepEqual(validateManifest(manifest({ capabilities: caps })), { ok: false, field: "capabilities", message: "Esta capacidad necesita apiVersion 3" });
-  assert.deepEqual(validateManifest(manifest({ apiVersion: 2, capabilities: caps })), { ok: false, field: "capabilities", message: "Esta capacidad necesita apiVersion 3" });
-  assert.deepEqual(validateManifest(manifest({ capabilities: ["search", "resolve", "download"] })), { ok: false, field: "capabilities", message: "Esta capacidad necesita apiVersion 2" });
+  assert.deepEqual(validateManifest(manifest({ capabilities: caps })), { ok: false, field: "capabilities", message: 'The "channels" capability needs apiVersion 3' });
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 2, capabilities: caps })), { ok: false, field: "capabilities", message: 'The "channels" capability needs apiVersion 3' });
+  assert.deepEqual(validateManifest(manifest({ capabilities: ["search", "resolve", "download"] })), { ok: false, field: "capabilities", message: 'The "download" capability needs apiVersion 2' });
   assert.equal(validateManifest(manifest({ apiVersion: 3, capabilities: caps })).ok, true);
   const dir = mkdtempSync(join(tmpdir(), "kino-channels-"));
   try {
@@ -1283,8 +1298,8 @@ test("validate --run liveSearch warns when a plugin with 18+ categories answers 
 test("subtitles: declared alone it skips resolve and search/home; any other mix keeps the old rules", () => {
   assert.equal(validateManifest(manifest({ capabilities: ["subtitles"] })).ok, true);
   assert.equal(validateManifest(manifest({ capabilities: ["home", "resolve", "subtitles"] })).ok, true);
-  assert.equal(validateManifest(manifest({ apiVersion: 2, capabilities: ["subtitles", "download"] })).message, 'El plugin debe declarar "resolve"');
-  assert.equal(validateManifest(manifest({ capabilities: ["subtitles", "resolve"] })).message, 'El plugin debe declarar "search" o "home"');
+  assert.equal(validateManifest(manifest({ apiVersion: 2, capabilities: ["subtitles", "download"] })).message, 'The plugin must declare "resolve"');
+  assert.equal(validateManifest(manifest({ capabilities: ["subtitles", "resolve"] })).message, 'The plugin must declare "search" or "home"');
   assert.deepEqual(contract.capabilities.anyPluginExports, ["subtitles"]);
   assert.equal(contract.timeoutsMs.subtitles, 10000);
 });
@@ -1324,8 +1339,8 @@ test("liveStreamHosts any is read only on v3, and needs channels there", () => {
   for (const apiVersion of [1, 2]) for (const v of ["any", "x", true]) {
     assert.equal(validateManifest(manifest({ apiVersion, liveStreamHosts: v })).manifest.liveStreamHostsAny, false);
   }
-  assert.deepEqual(validateManifest(manifest({ apiVersion: 3, liveStreamHosts: "any" })), { ok: false, field: "liveStreamHosts", message: '"liveStreamHosts" necesita la capacidad "channels"' });
-  assert.deepEqual(validateManifest(manifest({ apiVersion: 3, capabilities: caps, liveStreamHosts: "x" })), { ok: false, field: "liveStreamHosts", message: 'El campo "liveStreamHosts" solo admite "any"' });
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 3, liveStreamHosts: "any" })), { ok: false, field: "liveStreamHosts", message: '"liveStreamHosts" needs the "channels" capability' });
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 3, capabilities: caps, liveStreamHosts: "x" })), { ok: false, field: "liveStreamHosts", message: 'The "liveStreamHosts" field only takes "any"' });
   assert.equal(validateManifest(manifest({ apiVersion: 3, capabilities: caps })).manifest.liveStreamHostsAny, false);
   assert.deepEqual(contract.manifest.liveStreamHosts, { value: "any", apiVersion: 3, requires: "channels" });
 });
@@ -1355,7 +1370,7 @@ test("discoverable: an optional boolean at every apiVersion; false is a note, no
     assert.equal(validateManifest(manifest({ apiVersion, discoverable: false })).manifest.discoverable, false);
   }
   for (const value of ["no", 0, null, []]) {
-    assert.deepEqual(validateManifest(manifest({ discoverable: value })), { ok: false, field: "discoverable", message: 'El campo "discoverable" debe ser true o false' });
+    assert.deepEqual(validateManifest(manifest({ discoverable: value })), { ok: false, field: "discoverable", message: 'The "discoverable" field must be true or false' });
   }
   assert.deepEqual(contract.discovery, { topic: "kino-plugin", maxResults: 100 });
   assert.deepEqual(contract.manifest.discoverable, { default: true });
@@ -1395,18 +1410,18 @@ test("secrets: parsed with apiVersion 4, ignored below it, and its Spanish messa
   }
 
   assert.deepEqual(validateManifest(manifest({ apiVersion: 4, secrets: [] })),
-    { ok: false, field: "secrets", message: 'El campo "secrets" debe ser un objeto' });
+    { ok: false, field: "secrets", message: 'The "secrets" field must be an object' });
 
   const many = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`s${i}`, FAKE_SEAL]));
   assert.deepEqual(validateManifest(manifest({ apiVersion: 4, secrets: many })),
-    { ok: false, field: "secrets", message: 'El campo "secrets" admite hasta 16 secretos' });
+    { ok: false, field: "secrets", message: 'The "secrets" field takes up to 16 secrets' });
 
   assert.deepEqual(validateManifest(manifest({ apiVersion: 4, secrets: { "2x": FAKE_SEAL } })),
-    { ok: false, field: "secrets", message: 'El secreto "2x" tiene un nombre inválido' });
+    { ok: false, field: "secrets", message: 'The secret "2x" has an invalid name' });
 
   for (const badSeal of ["kino-sealed:v2:" + FAKE_SEAL.slice("kino-sealed:v1:".length), "kino-sealed:v1:@@@@", "kino-sealed:v1:AAAA"]) {
     assert.deepEqual(validateManifest(manifest({ apiVersion: 4, secrets: { apiKey: badSeal } })),
-      { ok: false, field: "secrets", message: 'El secreto "apiKey" no es un sello de Kino válido' });
+      { ok: false, field: "secrets", message: 'The secret "apiKey" is not a valid Kino seal' });
   }
 
   assert.deepEqual(contract.manifest.secrets, {
@@ -1435,10 +1450,10 @@ test("secrets: a consent line, and validate notes it can't check the repo bindin
     const r = await validate(dir);
     assert.equal(r.ok, true);
     assert.deepEqual(r.consent, [{ text: "Usa datos sellados por su autor", danger: false }]);
-    assert.deepEqual(r.notes, ["No se puede comprobar aquí para qué repositorio se sellaron los secretos: Kino lo comprueba al instalar. Además, solo se abren si la persona instala el plugin desde su rama principal, sin @rama. Y desde una URL del manifest (kino-plugin.json fuera de GitHub) Kino rechaza el plugin: los sellos son de un repositorio."]);
+    assert.deepEqual(r.notes, ["Which repository the secrets were sealed for can't be checked here: Kino checks it at install. They also only open when the person installs the plugin from its default branch, without @branch. And from a manifest URL (kino-plugin.json outside GitHub) Kino refuses the plugin: seals belong to a repository."]);
     const cli = spawnSync(process.execPath, [join(here, "..", "validate.mjs"), dir], { encoding: "utf8" });
     assert.equal(cli.status, 0);
-    assert.match(cli.stderr, /No se puede comprobar aquí para qué repositorio se sellaron los secretos/);
+    assert.match(cli.stderr, /Which repository the secrets were sealed for can't be checked here/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1562,15 +1577,15 @@ test("secrets: typed cipher keys from apiVersion 6, with the app's Spanish messa
 
   const bad = (secrets, api = 6) => validateManifest(manifest({ apiVersion: api, secrets }));
   const msg = (message) => ({ ok: false, field: "secrets", message });
-  assert.deepEqual(bad({ desKey: typed() }, 4), msg('El secreto "desKey" no es un sello de Kino válido'));
-  for (const use of [undefined, "key", "CIPHER-KEY", 1, null]) assert.deepEqual(bad({ desKey: typed({ use }) }), msg('El secreto "desKey" solo admite "use": "cipher-key"'), String(use));
-  for (const encoding of [undefined, "utf8", "HEX", "base64url", 1, null]) assert.deepEqual(bad({ desKey: typed({ encoding }) }), msg('El secreto "desKey" debe tener "encoding": "hex" o "base64"'), String(encoding));
-  assert.deepEqual(bad({ desKey: typed({ alg: "des-ede3-ecb" }) }), msg('El secreto "desKey" tiene un campo desconocido: "alg"'));
-  assert.deepEqual(bad({ desKey: typed({ ["x".repeat(60)]: 1 }) }), msg(`El secreto "desKey" tiene un campo desconocido: "${"x".repeat(40)}"`));
+  assert.deepEqual(bad({ desKey: typed() }, 4), msg('The secret "desKey" is not a valid Kino seal'));
+  for (const use of [undefined, "key", "CIPHER-KEY", 1, null]) assert.deepEqual(bad({ desKey: typed({ use }) }), msg('The secret "desKey" only takes "use": "cipher-key"'), String(use));
+  for (const encoding of [undefined, "utf8", "HEX", "base64url", 1, null]) assert.deepEqual(bad({ desKey: typed({ encoding }) }), msg('The secret "desKey" must have "encoding": "hex" or "base64"'), String(encoding));
+  assert.deepEqual(bad({ desKey: typed({ alg: "des-ede3-ecb" }) }), msg('The secret "desKey" has an unknown field: "alg"'));
+  assert.deepEqual(bad({ desKey: typed({ ["x".repeat(60)]: 1 }) }), msg(`The secret "desKey" has an unknown field: "${"x".repeat(40)}"`));
   // With several unknown fields the lexicographically smallest is named, like the app.
-  assert.deepEqual(bad({ desKey: typed({ zeta: 1, alg: 2 }) }), msg('El secreto "desKey" tiene un campo desconocido: "alg"'));
-  for (const s of [undefined, 42, "kino-sealed:v1:@@@"]) assert.deepEqual(bad({ desKey: typed({ seal: s }) }), msg('El secreto "desKey" no es un sello de Kino válido'), String(s));
-  for (const v of [[], 7]) assert.deepEqual(bad({ desKey: v }), msg('El secreto "desKey" no es un sello de Kino válido'));
+  assert.deepEqual(bad({ desKey: typed({ zeta: 1, alg: 2 }) }), msg('The secret "desKey" has an unknown field: "alg"'));
+  for (const s of [undefined, 42, "kino-sealed:v1:@@@"]) assert.deepEqual(bad({ desKey: typed({ seal: s }) }), msg('The secret "desKey" is not a valid Kino seal'), String(s));
+  for (const v of [[], 7]) assert.deepEqual(bad({ desKey: v }), msg('The secret "desKey" is not a valid Kino seal'));
 });
 
 test("seal.mjs: sealTyped checks the key size under its encoding and emits the typed object", () => {
@@ -1869,7 +1884,7 @@ test("a request with a secret refuses an undeclared host, even one otherwise rea
   const marker = kino.secret("apiKey");
   await assert.rejects(
     kino.fetch(`https://other.example.com/x?k=${marker}`),
-    (e) => e.code === "host_not_allowed" && e.message === "this plugin can't send sealed data to other.example.com",
+    (e) => e.code === "host_not_allowed" && e.message === "this plugin can't send sealed data to other.example.com" && e.host === "other.example.com",
   );
   // The very same host without the marker is refused too, but by the ordinary message.
   await assert.rejects(kino.fetch("https://other.example.com/x"), (e) => e.code === "host_not_allowed" && e.message === "host not allowed: other.example.com");
@@ -2318,7 +2333,7 @@ test("init scaffolds a .gitignore for the kit's local storage, cookies and secre
   }
 });
 
-test("the repo's own .gitignore excludes the kit's local secrets file too", () => {
+test("the repo's own .gitignore excludes the kit's local secrets file too", { skip: NEEDS_KINO_REPO }, () => {
   const gi = readFileSync(join(here, "..", "..", "..", ".gitignore"), "utf8");
   assert.ok(gi.includes("plugins/**/.kino-secrets.json"), gi);
 });
@@ -2787,10 +2802,10 @@ const listSetting = (extra = {}) => ({ key: "sources", label: "Direcciones", typ
 test("a list setting needs apiVersion 4 and valid fields, like the app", () => {
   const m = (api, s) => validateManifest(JSON.stringify({ ...JSON.parse(manifest()), apiVersion: api, settings: [s] }));
   assert.equal(m(4, listSetting()).ok, true);
-  assert.equal(m(3, listSetting()).message, 'El ajuste "sources" es una lista: necesita apiVersion 4');
-  assert.equal(m(4, listSetting({ max: 51 })).message, '"max" del ajuste "sources" va de 1 a 50');
-  assert.equal(m(4, listSetting({ fields: [] })).message, 'El ajuste "sources" necesita de 1 a 4 campos');
-  assert.equal(m(4, { key: "k", label: "x", type: "text", fields: [] }).message, 'Solo un ajuste de tipo list tiene "fields"');
+  assert.equal(m(3, listSetting()).message, 'The setting "sources" is a list: it needs apiVersion 4');
+  assert.equal(m(4, listSetting({ max: 51 })).message, '"max" of the setting "sources" goes from 1 to 50');
+  assert.equal(m(4, listSetting({ fields: [] })).message, 'The setting "sources" needs 1 to 4 fields');
+  assert.equal(m(4, { key: "k", label: "x", type: "text", fields: [] }).message, 'Only a setting of type list has "fields" ("k")');
 });
 
 test("the url fields of a list are the servers the plugin may reach", async () => {
@@ -2806,7 +2821,7 @@ test("streamHosts any (apiVersion 4) lets a movie's stream be on any public host
   const r = validateManifest(JSON.stringify(base));
   assert.equal(r.ok, true);
   assert.equal(r.manifest.streamHostsAny, true);
-  assert.equal(validateManifest(JSON.stringify({ ...base, streamHosts: "all" })).message, 'El campo "streamHosts" solo admite "any"');
+  assert.equal(validateManifest(JSON.stringify({ ...base, streamHosts: "all" })).message, 'The "streamHosts" field only takes "any"');
   assert.equal(validateManifest(JSON.stringify({ ...base, apiVersion: 3 })).manifest.streamHostsAny, false);
   const out = checkOutput("resolve", { url: "https://cdn.random-tld.xyz/v.mp4" }, r.manifest, []);
   assert.equal(out.value.url, "https://cdn.random-tld.xyz/v.mp4");
@@ -2820,7 +2835,7 @@ test("fetchHosts: only \"any\" at apiVersion 4, ignored below it, and the app's 
   assert.equal(validateManifest(manifest({ apiVersion: 4 })).manifest.fetchHostsAny, false);
   for (const value of ["all", true, ["any"], null, ""]) {
     assert.deepEqual(validateManifest(manifest({ apiVersion: 4, fetchHosts: value })),
-      { ok: false, field: "fetchHosts", message: 'El campo "fetchHosts" solo admite "any"' });
+      { ok: false, field: "fetchHosts", message: 'The "fetchHosts" field only takes "any"' });
   }
   // Below apiVersion 4 the app does not know the field: any value is ignored, never refused.
   for (const apiVersion of [1, 2, 3]) {
@@ -2830,33 +2845,150 @@ test("fetchHosts: only \"any\" at apiVersion 4, ignored below it, and the app's 
       assert.equal(ignored.manifest.fetchHostsAny, false);
     }
   }
-  assert.deepEqual(contract.manifest.fetchHosts, { value: "any", apiVersion: 4 });
-  // No consent line: the app shows its red line only for a Nuvio-converted plugin.
+  assert.deepEqual(contract.manifest.fetchHosts, { value: "any", apiVersion: 4, handWrittenApiVersion: 9, consentLine: "Puede conectarse a cualquier servidor público de internet (solo https, nunca tu red local)" });
+  // No consent line below apiVersion 9: there the app shows its red line only for a Nuvio-converted plugin.
   assert.deepEqual(consentLines(ok.manifest), []);
+  assert.deepEqual(consentLines(validateManifest(manifest({ apiVersion: 9, fetchHosts: "any" })).manifest), [{ text: "Puede conectarse a cualquier servidor público de internet (solo https, nunca tu red local)", danger: true }]);
 });
 
-test("fetchHosts on a hand-written plugin: validate accepts it with a warning that Kino ignores it", async () => {
+test("fetchHosts on a hand-written plugin: below apiVersion 9 validate warns that Kino ignores it, from 9 it is a red consent line", async () => {
   const dir = mkdtempSync(join(tmpdir(), "kino-fetchhosts-"));
-  const warning = "fetchHosts solo tiene efecto en plugins convertidos desde Nuvio; en tu plugin se ignora";
+  const warning = "fetchHosts only takes effect on plugins converted from Nuvio or, on one written by hand, from apiVersion 9 (Kino 0.9.55); in your plugin it is ignored";
   try {
     writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
-    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 4, fetchHosts: "any" }));
-    const r = await validate(dir);
-    assert.equal(r.ok, true);
-    assert.deepEqual(r.notes, [warning]);
+    for (const apiVersion of [4, 5, 6, 7]) {
+      writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion, fetchHosts: "any" }));
+      const r = await validate(dir);
+      assert.equal(r.ok, true);
+      assert.ok(r.notes.includes(warning), `apiVersion ${apiVersion}`);
+      assert.ok(!r.consent.some((l) => l.text === contract.manifest.fetchHosts.consentLine));
+    }
     const cli = spawnSync(process.execPath, [join(here, "..", "validate.mjs"), dir], { encoding: "utf8" });
     assert.equal(cli.status, 0);
-    assert.match(cli.stderr, /fetchHosts solo tiene efecto en plugins convertidos desde Nuvio; en tu plugin se ignora/);
+    assert.ok(cli.stderr.includes(warning));
+    // apiVersion 9 (Kino 0.9.55): honoured after the person approves its red line; nothing to warn about.
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 9, fetchHosts: "any" }));
+    const v8 = await validate(dir);
+    assert.equal(v8.ok, true);
+    assert.ok(!v8.notes.some((n) => n.includes("fetchHosts")), v8.notes.join("\n"));
+    assert.deepEqual(v8.consent.filter((l) => l.text === "Puede conectarse a cualquier servidor público de internet (solo https, nunca tu red local)"), [{ text: "Puede conectarse a cualquier servidor público de internet (solo https, nunca tu red local)", danger: true }]);
     // Ignored below apiVersion 4: no warning, as there is nothing Kino reads.
     writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 3, fetchHosts: "any" }));
     assert.deepEqual((await validate(dir)).notes, []);
     writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 4, fetchHosts: "all" }));
     const bad = spawnSync(process.execPath, [join(here, "..", "validate.mjs"), dir], { encoding: "utf8" });
     assert.equal(bad.status, 1);
-    assert.match(bad.stderr, /fetchHosts: El campo "fetchHosts" solo admite "any"/);
+    assert.match(bad.stderr, /fetchHosts: The "fetchHosts" field only takes "any"/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("kino.device (Kino 0.9.55): phone by default, tv with --device tv or KINO_DEVICE=tv, read-only; lang and appVersion beside it", () => {
+  const { $comment, ...device } = contract.kinoDevice;
+  assert.deepEqual(device, { values: ["phone", "tv"], default: "phone", kitEnv: "KINO_DEVICE", kitFlag: "--device" });
+  const m = JSON.parse(manifest({}));
+  const phone = createKino(m, { env: {} }).kino;
+  assert.equal(phone.device, "phone");
+  assert.equal(phone.lang, "es-CO");
+  assert.equal(phone.appVersion, "sdk");
+  assert.equal(createKino(m, { env: { KINO_DEVICE: "tv" } }).kino.device, "tv");
+  // The option (run.mjs --device) wins over the environment.
+  const tv = createKino(m, { device: "tv", env: { KINO_DEVICE: "phone" }, lang: "en-US" }).kino;
+  assert.equal(tv.device, "tv");
+  assert.equal(tv.lang, "en-US");
+  assert.throws(() => createKino(m, { device: "tablet", env: {} }), /device must be "phone" or "tv"/);
+  assert.throws(() => createKino(m, { env: { KINO_DEVICE: "watch" } }), /KINO_DEVICE must be "phone" or "tv"/);
+  assert.throws(() => { tv.device = "phone"; }, TypeError);
+  assert.equal(tv.device, "tv");
+  assert.equal(parseArgs(["--device", "tv", "p.js", "home"]).opts.device, "tv");
+  assert.equal(parseArgs(["p.js", "home"]).opts.device, null);
+  assert.throws(() => parseArgs(["--device", "tablet", "p.js", "home"]), /--device takes phone or tv/);
+});
+
+test("fetchHosts any at apiVersion 9: kino.fetch reaches an undeclared public host, never the home network nor a sealed value elsewhere", async () => {
+  const seen = [];
+  const fetchImpl = async (url) => { seen.push(String(url)); return new Response("hola", { headers: { "content-type": "text/plain" } }); };
+  const v8 = createKino(JSON.parse(manifest({ apiVersion: 9, fetchHosts: "any" })), { fetchImpl }).kino;
+  assert.equal((await v8.fetch("https://cdn-42.rotating.example.net/a")).text(), "hola");
+  assert.equal((await v8.fetch("https://8.8.8.8/b")).text(), "hola");
+  for (const url of ["https://localhost/x", "https://127.0.0.1/x", "https://10.0.0.2/x", "https://192.168.1.10/x", "https://169.254.169.254/x", "https://[::1]/x", "https://router.local/x", "https://nas.lan/x", "https://router/x"]) {
+    await assert.rejects(v8.fetch(url), (e) => e.code === "host_not_allowed", url);
+  }
+  // The validated manifest (what run.mjs hands the shim) behaves the same.
+  const checked = validateManifest(manifest({ apiVersion: 9, fetchHosts: "any" })).manifest;
+  assert.equal((await createKino(checked, { fetchImpl }).kino.fetch("https://other.example.org/c")).text(), "hola");
+  // kino.fetchAnyHost (Kino 0.9.55) says so; false when the kit, like the app, keeps kino.fetch on the hosts.
+  assert.equal(v8.fetchAnyHost, true);
+  assert.equal(createKino(JSON.parse(manifest({ apiVersion: 9 })), { fetchImpl }).kino.fetchAnyHost, false);
+  assert.equal(createKino(JSON.parse(manifest({ apiVersion: 7, fetchHosts: "any" })), { fetchImpl }).kino.fetchAnyHost, false);
+  // apiVersion 7: limited to its hosts, as before.
+  const v7 = createKino(JSON.parse(manifest({ apiVersion: 7, fetchHosts: "any" })), { fetchImpl }).kino;
+  await assert.rejects(v7.fetch("https://cdn-42.rotating.example.net/a"), (e) => e.code === "host_not_allowed");
+  assert.deepEqual(seen, ["https://cdn-42.rotating.example.net/a", "https://8.8.8.8/b", "https://other.example.org/c"]);
+  // A sealed value still goes only to the manifest's own hosts over https.
+  const { kino: sealed, dir } = sealedKino({ apiKey: "k-123" }, { apiVersion: 9, fetchHosts: "any" });
+  try {
+    await assert.rejects(sealed.fetch("https://cdn-42.rotating.example.net/a?k=" + sealed.secret("apiKey")),
+      (e) => e.code === "host_not_allowed" && e.message === "this plugin can't send sealed data to cdn-42.rotating.example.net");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fetchHosts any: a host reached only through it is https on the default port and a dotted public name; declared hosts keep their rules", async () => {
+  const seen = [];
+  const fetchImpl = async (url) => { seen.push(String(url)); return new Response("hola", { headers: { "content-type": "text/plain" } }); };
+  const m = validateManifest(JSON.stringify({ ...JSON.parse(manifest({ apiVersion: 9, fetchHosts: "any" })), hosts: ["declared.example.com", { host: "old.example.com", insecureHttp: true }] })).manifest;
+  const { kino } = createKino(m, { fetchImpl });
+  for (const url of ["http://mirror.example.org/x", "https://mirror.example.org:8443/x", "http://8.8.8.8/x", "https://8.8.8.8:8080/x", "https://router/x", "https://nas./x"]) {
+    await assert.rejects(kino.fetch(url), (e) => e.code === "host_not_allowed" && /fetchHosts/.test(e.message) && typeof e.host === "string", url);
+  }
+  // A redirect through the grant to plain http is refused before it goes out.
+  const redirecting = createKino(m, { fetchImpl: async (url) => { seen.push(String(url)); return new Response("", { status: 302, headers: { location: "http://cdn.example.net/b" } }); } }).kino;
+  await assert.rejects(redirecting.fetch("https://mirror.example.org/a"), (e) => e.code === "host_not_allowed");
+  // Declared hosts: an insecureHttp one keeps plain http on any port, a declared https one any port.
+  assert.equal((await kino.fetch("http://old.example.com:8080/x")).text(), "hola");
+  assert.equal((await kino.fetch("https://declared.example.com:8443/x")).text(), "hola");
+  await assert.rejects(kino.fetch("http://declared.example.com/x"), (e) => e.code === "host_not_allowed" && e.message === "only https is allowed");
+  assert.deepEqual(seen, ["https://mirror.example.org/a", "http://old.example.com:8080/x", "https://declared.example.com:8443/x"]);
+});
+
+test("fetchHosts any: the request budget of hosts reached through it, per site a minute and per plugin every ten minutes", async () => {
+  const { $comment, ...anyHost } = contract.fetch.anyHost;
+  assert.equal(typeof $comment, "string");
+  assert.deepEqual(anyHost, {
+    schemes: ["https"], port: 443, singleLabelNames: false,
+    perSite: 60, perSiteWindowMs: 60000, perPlugin: 600, perPluginWindowMs: 600000, nuvioPerSite: 250, nuvioPerPlugin: 2500,
+    errorCode: "rate_limited",
+  });
+  assert.ok(contract.fetch.errorCodes.includes("rate_limited"));
+  let t = 1_000_000;
+  let n = 0;
+  const fetchImpl = async () => { n++; return new Response("hola", { headers: { "content-type": "text/plain" } }); };
+  const m = { ...JSON.parse(manifest({ apiVersion: 9, fetchHosts: "any" })), hosts: ["declared.example.com"] };
+  const shim = createKino(m, { fetchImpl, now: () => t });
+  const { kino } = shim;
+  // One site (its subdomains together): 60 a minute.
+  for (let i = 0; i < 60; i++) await kino.fetch(`https://s${i % 3}.mirror.example.org/x`);
+  shim.resetBudget();
+  await assert.rejects(kino.fetch("https://cdn.mirror.example.org/x"), (e) => e.code === "rate_limited" && /fetchHosts/.test(e.message) && /60/.test(e.message));
+  t += 1000;
+  assert.equal((await kino.fetch("https://mirror.example.org/x")).text(), "hola");
+  // The plugin: 600 every ten minutes in all.
+  for (let site = 0; site < 9; site++) {
+    shim.resetBudget();
+    for (let i = 0; i < 60; i++) await kino.fetch(`https://www.mirror${site}.net/x`);
+  }
+  shim.resetBudget();
+  await assert.rejects(kino.fetch("https://fresh-site.net/x"), (e) => e.code === "rate_limited" && /600/.test(e.message));
+  // Declared hosts never spend it.
+  for (let i = 0; i < 59; i++) await kino.fetch("https://declared.example.com/x");
+  // It refills.
+  t += 600_000;
+  shim.resetBudget();
+  for (let i = 0; i < 60; i++) await kino.fetch("https://again-site.net/x");
+  assert.equal(n, 60 + 1 + 540 + 59 + 60);
 });
 
 test("streamHosts any covers a movie's side subtitles and audio too, never a channel's, like the broad video permission", () => {
@@ -2990,7 +3122,7 @@ test("run.mjs passes migrate its input object", async () => {
 test("migrate is a capability that needs apiVersion 6", () => {
   const r = validateManifest(manifest({ apiVersion: 4, capabilities: ["search", "resolve", "migrate"] }));
   assert.equal(r.ok, false);
-  assert.equal(r.message, "Esta capacidad necesita apiVersion 6");
+  assert.equal(r.message, 'The "migrate" capability needs apiVersion 6');
   assert.ok(validateManifest(manifest({ apiVersion: 6, capabilities: ["search", "resolve", "migrate"] })).ok);
 });
 
@@ -3048,7 +3180,7 @@ test("the signing lane refuses the network, storage, cookies and sleep as the ap
   const { kino } = createKino(v6());
   const lane = signingLane(kino);
   const why = (api) => `sign() can't use ${api}: whatever you need must come in signContext`;
-  await assert.rejects(async () => lane.fetch("https://cdn.example/"), (e) => e.code === "host_not_allowed" && e.message === "sign can't use the network");
+  await assert.rejects(async () => lane.fetch("https://cdn.example/"), (e) => e.code === "host_not_allowed" && e.message === "sign can't use the network" && e.host === undefined);
   for (const m of ["get", "set", "remove", "keys"]) {
     assert.throws(() => lane.storage[m]("k"), (e) => e.code === "not_allowed" && e.message === why("kino.storage"));
   }
@@ -3197,8 +3329,8 @@ test("below apiVersion 6 a stray confirm key on a setting is ignored, like the a
 test("a section's hint may be 300 characters, any other hint 80", () => {
   const base = (settings) => manifest({ apiVersion: 6, settings });
   assert.equal(validateManifest(base([{ key: "intro", label: "Intro", type: "section", hint: "x".repeat(300) }])).ok, true);
-  assert.equal(validateManifest(base([{ key: "intro", label: "Intro", type: "section", hint: "x".repeat(301) }])).message, 'La ayuda del ajuste "intro" pasa de 300 caracteres');
-  assert.equal(validateManifest(base([{ key: "user", label: "Usuario", type: "text", hint: "x".repeat(81) }])).message, 'La ayuda del ajuste "user" pasa de 80 caracteres');
+  assert.equal(validateManifest(base([{ key: "intro", label: "Intro", type: "section", hint: "x".repeat(301) }])).message, 'The hint of the setting "intro" is over 300 characters');
+  assert.equal(validateManifest(base([{ key: "user", label: "Usuario", type: "text", hint: "x".repeat(81) }])).message, 'The hint of the setting "user" is over 80 characters');
 });
 
 test("section, status and action settings (apiVersion 6)", () => {
@@ -3210,24 +3342,24 @@ test("section, status and action settings (apiVersion 6)", () => {
   for (const [o, t, api] of [4, 5].flatMap((api) => [[section, "section", api], [status, "status", api], [action, "action", api]])) {
     const r = validateManifest(base(api, [o]));
     assert.equal(r.ok, false);
-    assert.match(r.message, new RegExp(`es de tipo ${t}: necesita apiVersion 6$`));
+    assert.match(r.message, new RegExp(`is of type ${t}: it needs apiVersion 6$`));
   }
-  assert.equal(validateManifest(base(6, [{ ...status, confirm: "x" }])).message, 'Solo un ajuste de tipo action tiene "confirm" ("linked")');
-  assert.equal(validateManifest(base(6, [{ ...action, confirm: "x".repeat(121) }])).message, '"confirm" del ajuste "logout" debe ser un texto de 1 a 120 caracteres');
+  assert.equal(validateManifest(base(6, [{ ...status, confirm: "x" }])).message, 'Only a setting of type action has "confirm" ("linked")');
+  assert.equal(validateManifest(base(6, [{ ...action, confirm: "x".repeat(121) }])).message, '"confirm" of the setting "logout" must be a string of 1 to 120 characters');
   for (const bad of ["x".repeat(121), "  ", 3]) {
-    assert.equal(validateManifest(base(6, [{ ...action, confirm: bad }])).message, '"confirm" del ajuste "logout" debe ser un texto de 1 a 120 caracteres');
+    assert.equal(validateManifest(base(6, [{ ...action, confirm: bad }])).message, '"confirm" of the setting "logout" must be a string of 1 to 120 characters');
   }
   // apiVersion 4: the version refusal comes before every other check of the same setting, as in the app.
-  const need = (t, key) => `El ajuste "${key}" es de tipo ${t}: necesita apiVersion 6`;
+  const need = (t, key) => `The setting "${key}" is of type ${t}: it needs apiVersion 6`;
   assert.equal(validateManifest(base(4, [{ ...status, required: true }])).message, need("status", "linked"));
   assert.equal(validateManifest(base(4, [{ ...status, hint: "x".repeat(81) }])).message, need("status", "linked"));
   assert.equal(validateManifest(base(4, [action])).message, need("action", "logout"));
-  assert.equal(validateManifest(base(6, [{ ...status, required: true }])).message, 'El ajuste "linked" no puede ser obligatorio');
+  assert.equal(validateManifest(base(6, [{ ...status, required: true }])).message, 'The setting "linked" can\'t be required');
   const values = Array.from({ length: 12 }, (_, i) => ({ key: `v${i}`, label: `V${i}`, type: "text" }));
   const ui = Array.from({ length: 16 }, (_, i) => ({ key: `s${i}`, label: `S${i}`, type: "section" }));
   assert.equal(validateManifest(base(6, [...values, ...ui])).ok, true);
-  assert.equal(validateManifest(base(6, [...values.slice(0, 11), ...ui, { key: "s17", label: "S17", type: "section" }])).message, "El plugin tiene más de 16 secciones, estados o acciones");
-  assert.equal(validateManifest(base(6, [...values, { key: "v13", label: "V", type: "text" }, ...ui.slice(0, 15)])).message, "El plugin pide más de 12 ajustes");
+  assert.equal(validateManifest(base(6, [...values.slice(0, 11), ...ui, { key: "s17", label: "S17", type: "section" }])).message, "The plugin has more than 16 sections, statuses or actions");
+  assert.equal(validateManifest(base(6, [...values, { key: "v13", label: "V", type: "text" }, ...ui.slice(0, 15)])).message, "The plugin asks for more than 12 settings");
   assert.deepEqual(requiredExports(["search", "resolve"], [section, status, action]).sort(), ["action", "resolve", "search", "settingsStatus"]);
 });
 
@@ -3335,7 +3467,7 @@ test("the settings demo validates and its three exports run through call()", asy
   globalThis.kino = kino;
   const scratch = mkdtempSync(join(tmpdir(), "kino-demo-"));
   writeFileSync(join(scratch, "p.mjs"), readFileSync(pluginFile));
-  const plugin = await import(join(scratch, "p.mjs"));
+  const plugin = await import(pathToFileURL(join(scratch, "p.mjs")).href);
   assert.deepEqual(await call(plugin, "settingsStatus", []), { linked: "Sin cuenta: sesión anónima", slow: 42 });
   assert.deepEqual(await call(plugin, "action", ["test"]), { message: "Conexión correcta" });
   assert.deepEqual(await call(plugin, "validateSettings", ['{"email":"sin-arroba"}']), { email: "Escribe un correo válido" });
@@ -3389,7 +3521,7 @@ test("debug: an optional boolean from apiVersion 6, ignored below; on (the switc
   assert.equal(validateManifest(manifest({ apiVersion: 5, debug: true })).manifest.debug, false);
   assert.equal(validateManifest(manifest({ apiVersion: 5, debug: "yes" })).ok, true);
   for (const value of ["yes", 1, null, []]) {
-    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, debug: value })), { ok: false, field: "debug", message: 'El campo "debug" debe ser true o false' });
+    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, debug: value })), { ok: false, field: "debug", message: 'The "debug" field must be true or false' });
   }
   const dir = mkdtempSync(join(tmpdir(), "kino-debug-"));
   try {
@@ -3416,18 +3548,18 @@ test("section and theme: apiVersion 6 manifest fields with the app's messages", 
   assert.equal(v4.manifest.section, null);
   assert.deepEqual(v4.manifest.theme, {});
   for (const bad of ["Demo", 3, [], null]) {
-    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, section: bad })), { ok: false, field: "section", message: 'El campo "section" debe ser un objeto con "label"' });
+    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, section: bad })), { ok: false, field: "section", message: 'The "section" field must be an object with a "label"' });
   }
   for (const label of ["", "   ", "x".repeat(21), 5, null]) {
-    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, section: { label } })), { ok: false, field: "section", message: 'El campo "section.label" debe tener entre 1 y 20 caracteres' });
+    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, section: { label } })), { ok: false, field: "section", message: 'The "section.label" field must be 1 to 20 characters' });
   }
   assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: { highlight: "#f7c948", accent: "#3d5afe" } })).manifest.theme, { accent: "#3D5AFE", highlight: "#F7C948" });
   for (const bad of ["#FFFFFF", [], null]) {
-    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: bad })), { ok: false, field: "theme", message: 'El campo "theme" debe ser un objeto de colores' });
+    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: bad })), { ok: false, field: "theme", message: 'The "theme" field must be an object of colors' });
   }
-  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: { accent: "blue" } })), { ok: false, field: "theme", message: 'El color "accent" de "theme" debe ser del tipo #RRGGBB' });
-  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: { surface: 123 } })), { ok: false, field: "theme", message: 'El color "surface" de "theme" debe ser del tipo #RRGGBB' });
-  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: { zeta: "#000000", bar: "#000000" } })), { ok: false, field: "theme", message: 'El campo "theme" tiene un color desconocido: "bar"' });
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: { accent: "blue" } })), { ok: false, field: "theme", message: 'The "accent" color of "theme" must look like #RRGGBB' });
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: { surface: 123 } })), { ok: false, field: "theme", message: 'The "surface" color of "theme" must look like #RRGGBB' });
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: { zeta: "#000000", bar: "#000000" } })), { ok: false, field: "theme", message: 'The "theme" field has an unknown color: "bar"' });
   const m = validateManifest(manifest({ apiVersion: 6, section: { label: "Mía" } })).manifest;
   assert.deepEqual(requiredExports(m.capabilities, m.settings, m).sort(), ["resolve", "search", "section"]);
 });
@@ -3441,24 +3573,24 @@ test("palette: the same guardrails and Spanish warnings as the app", () => {
   assert.deepEqual(sound.warnings, []);
   assert.equal(sound.accent, "#3D5AFE");
   const cases = [
-    [{ accent: "#D81F26", onAccent: "#FFFFFF" }, "theme.accent: se parece demasiado al rojo de Kino; se usan los colores de Kino para accent y onAccent"],
-    [{ accent: "#1DB954", onAccent: "#FFFFFF" }, "theme.onAccent: no se lee sobre accent (contraste 2,5:1, mínimo 4,5:1); se usan los colores de Kino para accent y onAccent"],
-    [{ accent: "#0B1E3F", onAccent: "#FFFFFF" }, "theme.accent: no se distingue sobre el fondo (contraste 1,1:1, mínimo 3:1); se usan los colores de Kino para accent y onAccent"],
-    [{ background: "#7A7A7A" }, "theme.background: es demasiado claro (el fondo debe ser oscuro); se usa el de Kino"],
-    [{ background: "#D81F26" }, "theme.background: se parece demasiado al rojo de Kino; se usa el de Kino"],
-    [{ surface: "#0E0E0E" }, "theme.surface: no se distingue del fondo (contraste 1,0:1, mínimo 1,05:1); se usa el de Kino"],
-    [{ surface: "#7A7A7A" }, "theme.surface: es demasiado claro; se usa el de Kino"],
-    [{ highlight: "#2B2B2B" }, "theme.highlight: no se lee sobre el fondo (contraste 1,3:1, mínimo 4,5:1); se usa el de Kino"],
+    [{ accent: "#D81F26", onAccent: "#FFFFFF" }, "theme.accent: is too close to Kino's red; Kino's colors are used for accent and onAccent"],
+    [{ accent: "#1DB954", onAccent: "#FFFFFF" }, "theme.onAccent: isn't readable on accent (contrast 2.5:1, at least 4.5:1); Kino's colors are used for accent and onAccent"],
+    [{ accent: "#0B1E3F", onAccent: "#FFFFFF" }, "theme.accent: doesn't stand out on the background (contrast 1.1:1, at least 3:1); Kino's colors are used for accent and onAccent"],
+    [{ background: "#7A7A7A" }, "theme.background: is too light (the background must be dark); Kino's is used"],
+    [{ background: "#D81F26" }, "theme.background: is too close to Kino's red; Kino's is used"],
+    [{ surface: "#0E0E0E" }, "theme.surface: doesn't stand out from the background (contrast 1.0:1, at least 1.05:1); Kino's is used"],
+    [{ surface: "#7A7A7A" }, "theme.surface: is too light; Kino's is used"],
+    [{ highlight: "#2B2B2B" }, "theme.highlight: isn't readable on the background (contrast 1.3:1, at least 4.5:1); Kino's is used"],
   ];
   for (const [theme, warning] of cases) assert.deepEqual(resolvePalette(theme).warnings, [warning], JSON.stringify(theme));
   assert.deepEqual(resolvePalette({ accent: "#1DB954", onAccent: "#000000" }).kept, ["accent", "onAccent"]);
   assert.deepEqual(resolvePalette({ onAccent: "#FEFEFE" }).kept, ["onAccent"]);
-  assert.deepEqual(resolvePalette({ onAccent: "#000000" }).warnings, ["theme.onAccent: no se lee sobre accent (contraste 4,3:1, mínimo 4,5:1); se usan los colores de Kino para accent y onAccent"]);
+  assert.deepEqual(resolvePalette({ onAccent: "#000000" }).warnings, ["theme.onAccent: isn't readable on accent (contrast 4.3:1, at least 4.5:1); Kino's colors are used for accent and onAccent"]);
 
   // Parity with the app's extra cases.
-  assert.deepEqual(resolvePalette({ surface: "#D81F26" }).warnings, ["theme.surface: se parece demasiado al rojo de Kino; se usa el de Kino"]);
-  assert.deepEqual(resolvePalette({ highlight: "#F2303A" }).warnings, ["theme.highlight: se parece demasiado al rojo de Kino; se usa el de Kino"]);
-  assert.deepEqual(resolvePalette({ accent: "#3D5AFE", onAccent: "#E50914" }).warnings, ["theme.onAccent: se parece demasiado al rojo de Kino; se usan los colores de Kino para accent y onAccent"]);
+  assert.deepEqual(resolvePalette({ surface: "#D81F26" }).warnings, ["theme.surface: is too close to Kino's red; Kino's is used"]);
+  assert.deepEqual(resolvePalette({ highlight: "#F2303A" }).warnings, ["theme.highlight: is too close to Kino's red; Kino's is used"]);
+  assert.deepEqual(resolvePalette({ accent: "#3D5AFE", onAccent: "#E50914" }).warnings, ["theme.onAccent: is too close to Kino's red; Kino's colors are used for accent and onAccent"]);
   const mix = resolvePalette({ background: "#101820", surface: "#1A2733", accent: "#1DB954", onAccent: "#FFFFFF", highlight: "#F7C948" });
   assert.deepEqual(mix.kept, ["background", "surface", "highlight"]);
   assert.equal(mix.warnings.length, 1);
@@ -3484,7 +3616,7 @@ test("palette: malformed input never throws and falls back with a warning", () =
 });
 
 test("palette: ratios print floored to one decimal, identically to the app", () => {
-  const vectors = [[4.55, "4,5"], [0.35, "0,3"], [4.46, "4,4"], [4.49999, "4,4"], [21, "21,0"], [1, "1,0"], [1.049, "1,0"], [2.99, "2,9"]];
+  const vectors = [[4.55, "4.5"], [0.35, "0.3"], [4.46, "4.4"], [4.49999, "4.4"], [21, "21.0"], [1, "1.0"], [1.049, "1.0"], [2.99, "2.9"]];
   for (const [x, want] of vectors) assert.equal(formatRatio(x), want, String(x));
 });
 
@@ -3534,18 +3666,18 @@ test("validate() refuses a plugin that declares a section but doesn't export it"
 
 test("run.mjs: section, categories and theme on the demo plugin", async () => {
   const dir = join(here, "section-demo");
-  const plugin = await import(join(dir, "plugin.js"));
+  const plugin = await import(pathToFileURL(join(dir, "plugin.js")).href);
   assert.deepEqual((await call(plugin, "section", ["series"])).tab, "series");
   assert.equal((await call(plugin, "section", [])).tab, "pelis");
   assert.equal((await call(plugin, "categories", [])).length, 3);
   const run = (...args) => spawnSync(process.execPath, [join(here, "..", "run.mjs"), dir, ...args], { encoding: "utf8" });
   const theme = run("theme");
   assert.equal(theme.status, 0, theme.stderr);
-  assert.match(theme.stdout, /accent\s+#3D5AFE\s+se usa/);
-  assert.match(theme.stdout, /onAccent sobre accent: 5,1:1/);
+  assert.match(theme.stdout, /accent\s+#3D5AFE\s+used/);
+  assert.match(theme.stdout, /onAccent on accent: 5.1:1/);
   // One token fails a guardrail on purpose: the kit shows the fallback and the app's warning.
   assert.match(theme.stdout, /highlight\s+#6B5A2A\s+Kino\s+#F5F5F5/);
-  assert.match(theme.stdout, /aviso: theme\.highlight: no se lee sobre el fondo/);
+  assert.match(theme.stdout, /warning: theme\.highlight: isn't readable on the background/);
   const sec = run("section", "vacia");
   assert.equal(sec.status, 0, sec.stderr);
   assert.deepEqual(JSON.parse(sec.stdout).rows, []);
@@ -3587,7 +3719,7 @@ test("the guide's kino.fetch limits row names every fetch limit the app enforces
 // apiVersion 5 is Kino 0.9.45's (the author's signature, nothing else): a v5 manifest using an apiVersion 6
 // field is refused, or reads it exactly as those apps do (an unknown field, ignored).
 test("apiVersion 5 manifests read as Kino 0.9.45 and 0.9.46 read them: every apiVersion 6 field is refused or ignored", () => {
-  assert.equal(contract.maxApiVersion, 8);
+  assert.equal(contract.maxApiVersion, 11);
   const v5 = (extra) => validateManifest(manifest({ apiVersion: 5, ...extra }));
   const ignored = v5({ debug: true, section: { label: "Mía" }, theme: { accent: "#3D5AFE" } });
   assert.equal(ignored.ok, true);
@@ -3595,9 +3727,9 @@ test("apiVersion 5 manifests read as Kino 0.9.45 and 0.9.46 read them: every api
   assert.equal(ignored.manifest.section, null);
   assert.deepEqual(ignored.manifest.theme, {});
   assert.equal(v5({ debug: "yes", section: 7, theme: "red" }).ok, true);
-  assert.deepEqual(v5({ capabilities: ["search", "resolve", "migrate"] }), { ok: false, field: "capabilities", message: "Esta capacidad necesita apiVersion 6" });
+  assert.deepEqual(v5({ capabilities: ["search", "resolve", "migrate"] }), { ok: false, field: "capabilities", message: 'The "migrate" capability needs apiVersion 6' });
   const typed = v5({ secrets: { desKey: { seal: FAKE_SEAL, use: "cipher-key", encoding: "hex" } } });
-  assert.deepEqual(typed, { ok: false, field: "secrets", message: 'El secreto "desKey" no es un sello de Kino válido' });
+  assert.deepEqual(typed, { ok: false, field: "secrets", message: 'The secret "desKey" is not a valid Kino seal' });
   const status = v5({ settings: [{ key: "linked", label: "Estado", type: "status" }] });
   assert.equal(status.ok, false);
   assert.equal(status.field, "settings");
@@ -3609,14 +3741,14 @@ test("apiVersion 5 manifests read as Kino 0.9.45 and 0.9.46 read them: every api
 // apiVersion 5 shipped in Kino 0.9.45 (signature.fromApp); 6 first ships in 0.9.50 (nothing ships until the built-in source removal is done).
 test("each apiVersion above 4 names the Kino it first ships in, and validate's note reads it", async () => {
   assert.equal(contract.manifest.signature.fromApp, "0.9.45");
-  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54" });
+  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66" });
   const dir = mkdtempSync(join(tmpdir(), "kino-from-app-"));
   try {
     writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
     writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6 }));
-    assert.deepEqual((await validate(dir)).notes, ["apiVersion 6: requiere Kino 0.9.50 o superior; las versiones anteriores lo rechazan con «Este plugin necesita una versión más nueva de Kino»"]);
+    assert.deepEqual((await validate(dir)).notes, ["apiVersion 6: needs Kino 0.9.50 or later; older versions refuse it with \"This plugin needs a newer version of Kino\""]);
     writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 5 }));
-    assert.deepEqual((await validate(dir)).notes, ["apiVersion 5: requiere Kino 0.9.45 o superior; las versiones anteriores lo rechazan con «Este plugin necesita una versión más nueva de Kino»"]);
+    assert.deepEqual((await validate(dir)).notes, ["apiVersion 5: needs Kino 0.9.45 or later; older versions refuse it with \"This plugin needs a newer version of Kino\""]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -3678,9 +3810,9 @@ test("scopedSearch: apiVersion 6, only with search, and nothing more to export",
   assert.ok(ok.ok);
   assert.deepEqual(requiredExports(ok.manifest.capabilities).sort(), ["browse", "resolve", "search"]);
   assert.deepEqual(validateManifest(manifest({ apiVersion: 5, capabilities: ["search", "browse", "resolve", "scopedSearch"] })),
-    { ok: false, field: "capabilities", message: "Esta capacidad necesita apiVersion 6" });
+    { ok: false, field: "capabilities", message: 'The "scopedSearch" capability needs apiVersion 6' });
   assert.deepEqual(validateManifest(manifest({ apiVersion: 6, capabilities: ["home", "browse", "resolve", "scopedSearch"] })),
-    { ok: false, field: "capabilities", message: 'La capacidad "scopedSearch" necesita también "search"' });
+    { ok: false, field: "capabilities", message: 'The "scopedSearch" capability also needs "search"' });
   assert.deepEqual(contract.capabilities.needsApproval.includes("scopedSearch"), false);
 });
 
@@ -3869,8 +4001,8 @@ test("browser pages: its own wider line, true keeps the old one, and page answer
   assert.equal(v({ browser: true }).manifest.browserPages, false);
   assert.equal(v({ browser: "pages" }, 5).manifest.browser, false);
   assert.deepEqual(v({ browser: "page" }), { ok: false, field: "browser", message: contract.manifest.browser.notBooleanMessage });
-  assert.equal(contract.maxApiVersion, 8);
-  assert.equal(v({}, 9).ok, false);
+  assert.equal(contract.maxApiVersion, 11);
+  assert.equal(v({}, 12).ok, false);
   const dir = mkdtempSync(join(tmpdir(), "kino-browser-page-"));
   try {
     writeFileSync(join(dir, "plugin.js"), "export async function search(q){ try { await kino.browser.page('https://example.com/?s=' + q, { waitFor: 'article' }) } catch (e) { return [{ id: e.code, title: e.code, ref: e.code, kind: 'movie' }] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
@@ -3905,7 +4037,7 @@ test("tracking: apiVersion 7, standalone, its red consent line naming the hosts,
   assert.equal(v({ capabilities: ["tracking"] }).ok, true);
   assert.equal(v({ capabilities: ["tracking", "subtitles"] }).ok, true);
   assert.equal(v({ capabilities: ["search", "resolve", "tracking"] }).ok, true);
-  assert.deepEqual(v({ capabilities: ["tracking"] }, 6), { ok: false, field: "capabilities", message: "Esta capacidad necesita apiVersion 7" });
+  assert.deepEqual(v({ capabilities: ["tracking"] }, 6), { ok: false, field: "capabilities", message: 'The "tracking" capability needs apiVersion 7' });
   assert.deepEqual(requiredExports(["tracking"]), ["track"]);
   const lines = (hosts) => consentLines(v({ capabilities: ["tracking"], hosts }).manifest);
   assert.deepEqual(lines(["seenr.app"]), [{ text: "Le contará a seenr.app qué ves y cuándo lo terminas", danger: true }]);
@@ -3931,7 +4063,7 @@ test("segments: apiVersion 7, standalone, plain consent line, and each bad entry
   const v = (extra, api = 7) => validateManifest(manifest({ apiVersion: api, ...extra }));
   assert.equal(v({ capabilities: ["segments"] }).ok, true);
   assert.equal(v({ capabilities: ["segments", "subtitles", "tracking"] }).ok, true);
-  assert.deepEqual(v({ capabilities: ["segments"] }, 6), { ok: false, field: "capabilities", message: "Esta capacidad necesita apiVersion 7" });
+  assert.deepEqual(v({ capabilities: ["segments"] }, 6), { ok: false, field: "capabilities", message: 'The "segments" capability needs apiVersion 7' });
   assert.deepEqual(requiredExports(["segments"]), ["segments"]);
   assert.equal(contract.capabilities.needsApproval.includes("segments"), false);
   assert.deepEqual(consentLines(v({ capabilities: ["segments"] }).manifest), [{ text: "Agrega el botón para saltar la intro y los créditos", danger: false }]);
@@ -4261,7 +4393,7 @@ test("run.mjs meta: a plugin without meta gets a clear message", () => {
 });
 
 test("run.mjs meta: past the app's 6 s it stops waiting, even with the plugin's work still pending", () => {
-  const dir = metaPlugin("export async function meta(){ return new Promise((ok) => setTimeout(() => ok({ title: 'late' }), 60000)) }");
+  const dir = metaPlugin("export async function meta(){ return new Promise(() => {}) }");
   try {
     const started = Date.now();
     const r = runCli([dir, "meta", "tt0133093"]);
@@ -4407,10 +4539,10 @@ test("catalogOnly: resolve may be left out, one of home/browse/search/meta is ne
   for (const value of ["true", 1, null, []]) {
     assert.deepEqual(validateManifest(manifest({ catalogOnly: value })), { ok: false, field: "catalogOnly", message: co.notBooleanMessage });
   }
-  assert.deepEqual(validateManifest(manifest({ capabilities: ["home"] })), { ok: false, field: "capabilities", message: 'El plugin debe declarar "resolve"' });
+  assert.deepEqual(validateManifest(manifest({ capabilities: ["home"] })), { ok: false, field: "capabilities", message: 'The plugin must declare "resolve"' });
   assert.equal(contract.additiveFromApp.catalogOnly, "0.9.54");
-  // No apiVersion of its own: 8 is the audio kinds' gate, and catalogOnly is valid at every apiVersion.
-  assert.equal(contract.apiVersion, 8);
+  // No apiVersion of its own: catalogOnly is valid at every apiVersion.
+  assert.equal(contract.apiVersion, 11);
 });
 
 test("catalogOnly: validate prints the consent line and what an older Kino does with it", async () => {
@@ -4445,6 +4577,216 @@ test("catalogOnly: run.mjs still runs resolve, and says Kino 0.9.54+ never calls
     assert.match(r.stderr, /Kino 0\.9\.54 y posteriores nunca llaman resolve/);
     const home = runCli([dir, "home"]);
     assert.doesNotMatch(home.stderr, /nunca llaman resolve/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Kino 0.9.55: English variants of the settings form's texts and of section.label (PluginSettingsEnglishTest's mirror).
+test("English variants of setting texts: kept, shown under en, base under es, fallback when missing", () => {
+  const settings = [
+    { key: "about", label: "Acerca", labelEn: "About", type: "section", hint: "Inicia sesión", hintEn: "Sign in" },
+    { key: "email", label: "Correo", labelEn: "Email", type: "text", hint: "tu@correo.com", hintEn: "you@mail.com" },
+    { key: "quality", label: "Calidad", type: "select", options: [{ value: "hd", label: "Alta", labelEn: "High" }, { value: "sd", label: "Normal" }] },
+    { key: "servers", label: "Servidores", type: "list", fields: [{ key: "name", label: "Nombre", labelEn: "Name", type: "text" }, { key: "url", label: "Dirección", type: "url" }] },
+    { key: "linked", label: "Estado", type: "status" },
+    { key: "logout", label: "Cerrar sesión", labelEn: "Sign out", type: "action", confirm: "¿Seguro?", confirmEn: "Are you sure?" },
+  ];
+  const r = validateManifest(manifest({ apiVersion: 9, settings, section: { label: "Novelas", labelEn: "Soaps" }, capabilities: ["home", "resolve"] }));
+  assert.equal(r.ok, true, r.message);
+  const en = Object.fromEntries(localizedSettings(r.manifest.settings, "en").map((x) => [x.key, x]));
+  assert.equal(en.email.label, "Email");
+  assert.equal(en.email.hint, "you@mail.com");
+  assert.equal(en.about.hint, "Sign in");
+  assert.deepEqual(en.quality.options.map((o) => [o.value, o.label]), [["hd", "High"], ["sd", "Normal"]]);
+  assert.deepEqual(en.servers.fields.map((f) => f.label), ["Name", "Dirección"]);
+  assert.equal(en.linked.label, "Estado");
+  assert.equal(en.logout.confirm, "Are you sure?");
+  assert.deepEqual(localizedSettings(r.manifest.settings, "es-CO"), r.manifest.settings);
+  assert.equal(sectionLabel(r.manifest, "en"), "Soaps");
+  assert.equal(sectionLabel(r.manifest, "es"), "Novelas");
+  assert.equal(sectionLabel({ section: { label: "Novelas" } }, "en"), "Novelas");
+  const cov = englishCoverage(r.manifest);
+  assert.equal(cov.total, 14);
+  assert.ok(cov.missing.includes("quality.label") && cov.missing.includes("quality[sd].label") && cov.missing.includes("linked.label"));
+  // apiVersion 9 (Kino 0.9.55): below it the keys are unknown, never checked, and dropped from the validated manifest.
+  for (const apiVersion of [1, 6, 8]) {
+    const old = validateManifest(manifest({ apiVersion, settings: [{ key: "t", label: "Correo", labelEn: "a".repeat(99), type: "text" }], ...(apiVersion >= 6 ? { section: { label: "Novelas", labelEn: 7 }, capabilities: ["home", "resolve"] } : {}) }));
+    assert.equal(old.ok, true, old.message);
+    assert.equal(old.manifest.settings[0].labelEn, undefined);
+    assert.equal(localizedSettings(old.manifest.settings, "en")[0].label, "Correo");
+    if (old.manifest.section) assert.equal(sectionLabel(old.manifest, "en"), "Novelas");
+  }
+});
+
+test("English variants have the base fields' limits and the app's messages", () => {
+  const one = (o, api = 9) => validateManifest(manifest({ apiVersion: api, settings: [o] })).message;
+  for (const bad of ["a".repeat(41), "  ", 7]) assert.equal(one({ key: "t", label: "T", labelEn: bad, type: "text" }), '"labelEn" of the setting "t" must be a string of 1 to 40 characters');
+  assert.equal(validateManifest(manifest({ apiVersion: 9, settings: [{ key: "t", label: "T", labelEn: "a".repeat(40), type: "text" }] })).ok, true);
+  assert.equal(one({ key: "t", label: "T", hintEn: "a".repeat(81), type: "text" }), '"hintEn" of the setting "t" must be a string of up to 80 characters');
+  assert.equal(validateManifest(manifest({ apiVersion: 9, settings: [{ key: "s", label: "S", hintEn: "a".repeat(300), type: "section" }] })).ok, true);
+  assert.equal(one({ key: "s", label: "S", hintEn: "a".repeat(301), type: "section" }), '"hintEn" of the setting "s" must be a string of up to 300 characters');
+  assert.equal(one({ key: "go", label: "Go", type: "action", confirm: "¿Seguro?", confirmEn: "a".repeat(121) }), '"confirmEn" of the setting "go" must be a string of 1 to 120 characters');
+  assert.equal(one({ key: "t", label: "T", type: "text", confirmEn: "Sure?" }), 'Only a setting of type action has "confirmEn" ("t")');
+  assert.equal(one({ key: "go", label: "Go", type: "action", confirmEn: "Sure?" }), '"confirmEn" of the setting "go" also needs "confirm"');
+  assert.equal(validateManifest(manifest({ apiVersion: 8, settings: [{ key: "t", label: "T", type: "text", confirmEn: "Sure?" }] })).ok, true);
+  assert.equal(one({ key: "q", label: "Q", type: "select", options: [{ value: "a", label: "A", labelEn: "a".repeat(41) }] }), 'An option of the setting "q" is not valid');
+  assert.equal(one({ key: "l", label: "L", type: "list", fields: [{ key: "n", label: "N", labelEn: "", type: "text" }] }), '"labelEn" of the field "n" of "l" must be a string of 1 to 40 characters');
+  assert.equal(one({ key: "l", label: "L", type: "list", fields: [{ key: "n", label: "N", hintEn: "a".repeat(81), type: "text" }] }), '"hintEn" of the field "n" of "l" must be a string of up to 80 characters');
+  const sec = (labelEn) => validateManifest(manifest({ apiVersion: 9, capabilities: ["home", "resolve"], section: { label: "Novelas", labelEn } }));
+  assert.equal(sec("a".repeat(21)).message, 'The "section.labelEn" field must be 1 to 20 characters');
+  assert.equal(sec(3).ok, false);
+  assert.equal(sec(null).ok, true);
+  assert.deepEqual(contract.settings.english.settingKeys, ["labelEn", "hintEn", "confirmEn"]);
+});
+
+test("validate() tells how many texts have English once the plugin uses them", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-english-"));
+  try {
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ settings: [{ key: "u", label: "Usuario", type: "text" }] }));
+    assert.deepEqual((await validate(dir)).notes, []);
+    // apiVersion 8: the English keys are unknown there, so nothing to tell.
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 8, settings: [{ key: "u", label: "Usuario", labelEn: "User", type: "text", hint: "tu nombre" }] }));
+    assert.deepEqual((await validate(dir)).notes.filter((n) => n.includes("English texts")), []);
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 9, settings: [{ key: "u", label: "Usuario", labelEn: "User", type: "text", hint: "tu nombre" }] }));
+    const notes = (await validate(dir)).notes.filter((n) => n.includes("English texts"));
+    assert.equal(notes[0], "English texts: 1 of 2; without an English version (Kino shows them in Spanish): u.hint");
+    assert.match(notes[1], /^Kino 0\.9\.55 or later shows the English texts/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a stream's media is cleaned and bounded, never refused", () => {
+  const m = JSON.parse(manifest());
+  const r = checkOutput("resolve", {
+    url: "https://example.com/v.mp4",
+    media: { title: " My\nMovie\u0000 ", sizeBytes: -1, video: { codec: "h264", width: 99999, fps: 1e99 }, audio: Array.from({ length: 40 }, () => ({ codec: "aac" })), notes: ["a", "", "b", "c", "d", "e"] },
+  }, m);
+  const v = r.value;
+  assert.equal(v.media.title, "My Movie");
+  assert.equal(v.media.sizeBytes, 0);
+  assert.equal(v.media.video.width, 16384);
+  assert.equal(v.media.video.fps, 480);
+  assert.equal(v.media.audio.length, 16);
+  assert.deepEqual(v.media.notes, ["a", "b", "c", "d"]);
+  assert.equal(mediaOf({}), null);
+  assert.equal(mediaOf("nope"), null);
+  assert.equal(checkOutput("resolve", { url: "https://example.com/v.mp4", media: {} }, m).value.media, undefined);
+});
+
+test("a stream's portable HLS copy passes the url's own host rules, anything else is dropped", () => {
+  const m = JSON.parse(manifest());
+  const ok = checkOutput("resolve", { url: "https://example.com/v.mkv", portable: { url: "https://example.com/p/index.m3u8", mime: "application/vnd.apple.mpegurl" } }, m);
+  assert.deepEqual(ok.value.portable, { url: "https://example.com/p/index.m3u8", mime: "application/x-mpegURL" });
+  assert.deepEqual(checkOutput("resolve", { url: "https://example.com/v.mkv", portable: { url: "https://example.com/p.m3u8" } }, m).value.portable, { url: "https://example.com/p.m3u8", mime: "application/x-mpegURL" });
+  for (const portable of [{ url: "https://elsewhere.org/p.m3u8" }, { url: "http://example.com/p.m3u8" }, { url: "https://example.com/p.mp4", mime: "video/mp4" }, "nope", { mime: "application/x-mpegURL" }]) {
+    const r = checkOutput("resolve", { url: "https://example.com/v.mkv", portable }, m);
+    assert.equal(r.value.portable, undefined, JSON.stringify(portable));
+    assert.ok(r.drops.some((d) => d.includes("portable")), JSON.stringify(portable));
+  }
+  assert.equal(checkOutput("resolve", { url: "https://example.com/v.mkv" }, m).value.portable, undefined);
+});
+
+test("externalResolver: the package, an apk from a GitHub release, F-Droid and a Downloader code", () => {
+  const ok = (er, caps = ["search", "resolve", "externalResolve"], api = 11) =>
+    validateManifest(manifest({ apiVersion: api, capabilities: caps, externalResolver: er }));
+  const gh = "https://github.com/acme/resolver/releases/download/v1.0/r.apk";
+  assert.equal(ok({ package: "com.example.resolver" }).ok, true);
+  assert.equal(ok({ package: "com.example.resolver", fdroid: true }).ok, true);
+  assert.equal(ok({ package: "com.example.resolver", downloader: { code: "7702264" } }).ok, true);
+  assert.equal(ok({ package: "com.example.resolver", apk: { url: gh, sha256: "ab".repeat(32), label: "R" }, fdroid: true, downloader: { code: "123" } }).ok, true);
+  for (const bad of [
+    "com.example.resolver", {}, { package: "nodots" },
+    { package: "com.example.resolver", fdroid: false }, { package: "com.example.resolver", fdroid: "yes" },
+    { package: "com.example.resolver", downloader: "123" }, { package: "com.example.resolver", downloader: {} },
+    { package: "com.example.resolver", downloader: { code: 123 } }, { package: "com.example.resolver", downloader: { code: "12" } },
+    { package: "com.example.resolver", downloader: { code: "12345678901" } }, { package: "com.example.resolver", downloader: { code: "12ab" } },
+    { package: "com.example.resolver", apk: { url: "https://example.com/r.apk", sha256: "a".repeat(64) } }, // not GitHub
+    { package: "com.example.resolver", apk: { url: "https://github.com/acme/resolver/raw/main/r.apk", sha256: "a".repeat(64) } },
+    { package: "com.example.resolver", apk: { url: gh } },
+  ]) {
+    const r = ok(bad);
+    assert.equal(r.ok, false, JSON.stringify(bad));
+    assert.equal(r.field, "externalResolver");
+  }
+  const noCap = ok({ package: "com.example.resolver", fdroid: true }, ["search", "resolve"]);
+  assert.equal(noCap.ok, false);
+  assert.match(noCap.message, /externalResolve/);
+  // Below apiVersion 11 the field is ignored, as the app ignores it.
+  assert.equal(ok({ package: "nodots" }, ["search", "resolve"], 10).ok, true);
+});
+
+// ---- the sandbox: the plugin sees Kino's world, not Node's ----
+
+const sandboxPlugin = (code) => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-sandbox-"));
+  writeFileSync(join(dir, "plugin.js"), code);
+  return dir;
+};
+
+test("sandbox: Node's globals the engine lacks are undefined inside the plugin, and the provided ones are there", async () => {
+  const dir = sandboxPlugin(`
+    export const probe = () => ({
+      missing: ["setTimeout", "setInterval", "setImmediate", "queueMicrotask", "Buffer", "process", "require", "fetch", "AbortController", "structuredClone", "performance", "crypto", "WeakRef", "Intl"].filter((n) => typeof globalThis[n] !== "undefined"),
+      present: ["kino", "console", "URL", "URLSearchParams", "atob", "btoa", "TextEncoder", "TextDecoder", "Promise", "JSON", "Map"].filter((n) => typeof globalThis[n] === "undefined"),
+    });`);
+  try {
+    const { plugin, sandboxed } = await loadPlugin(join(dir, "plugin.js"), {});
+    assert.equal(sandboxed, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(plugin.probe())), { missing: [], present: [] }); // cross-realm: compare as JSON
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sandbox: touching a missing global is a ReferenceError, and the static scan names it with the fix", async () => {
+  const code = "export async function search() { await new Promise((ok) => setTimeout(ok, 10)); return []; }";
+  const dir = sandboxPlugin(code);
+  try {
+    const { plugin } = await loadPlugin(join(dir, "plugin.js"), {});
+    await assert.rejects(plugin.search(), /setTimeout is not defined/);
+    const hits = scanMissingGlobals(code);
+    assert.equal(hits[0].name, "setTimeout");
+    assert.match(missingGlobalLines(hits)[0], /kino\.sleep/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sandbox: an import is refused as the device would, named exports stay live, default export works", async () => {
+  const bad = sandboxPlugin(`import fs from "node:fs";\nexport const a = 1;`);
+  const good = sandboxPlugin(`export let n = 1;\nexport function bump() { n++; }\nconst x = 2;\nexport { x as two };\nexport default { id: "d" };`);
+  try {
+    await assert.rejects(loadPlugin(join(bad, "plugin.js"), {}), /node:fs/);
+    const { plugin } = await loadPlugin(join(good, "plugin.js"), {});
+    plugin.bump();
+    assert.equal(plugin.n, 2);
+    assert.equal(plugin.two, 2);
+    assert.equal(plugin.default.id, "d");
+  } finally {
+    rmSync(bad, { recursive: true, force: true });
+    rmSync(good, { recursive: true, force: true });
+  }
+});
+
+test("sandbox: localeCompare compares code units and toLocaleString ignores the locale, as in the engine", async () => {
+  const dir = sandboxPlugin(`export const r = () => ({ cmp: "a".localeCompare("B"), num: (1234.5).toLocaleString("de-DE") });`);
+  try {
+    const { plugin } = await loadPlugin(join(dir, "plugin.js"), {});
+    assert.equal(plugin.r().cmp, 31); // the engine answers the code-unit difference, "a"(97) - "B"(66); ICU would say -1
+    assert.equal(plugin.r().num, "1234.5");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sandbox: validate() warns about a missing global without refusing the plugin", async () => {
+  const dir = metaPlugin("export async function meta(){ await new Promise((ok) => setTimeout(ok, 1)); return { title: 'x' } }");
+  try {
+    const r = await validate(dir);
+    assert.ok(r.warnings.some((w) => /setTimeout/.test(w)), JSON.stringify(r.warnings));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

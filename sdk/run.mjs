@@ -37,6 +37,10 @@
 //   node sdk/run.mjs <plugin dir> segments tt0133093 [durationMs]                 (a movie)
 //   node sdk/run.mjs <plugin dir> segments tmdb:1396 1 2 [durationMs]             (an episode: the SHOW's id, season, episode)
 //   node sdk/run.mjs <plugin dir> segments '{"kind":"episode","ids":{"tmdb":62085},"show":{"ids":{"tmdb":1396}},"season":1,"episode":2,"durationMs":2880000}'
+// The player panel (apiVersion 9): the fake context is a movie 10 min in on a TV; --context '<json>' merges over it
+//   node sdk/run.mjs [--context '<json>'] <plugin dir> panel <ref> [tab]
+//   node sdk/run.mjs [--context '<json>'] <plugin dir> panelAction <ref> <key> <press|change|submit|tab|open> ['<value json>'] ['<values json>']
+//   node sdk/run.mjs [--context '<json>'] <plugin dir> playerEvent <ref> <started|paused|resumed|ended|failed|copyChanged> ['<detail json>']
 // Describing other titles (apiVersion 6, the "meta" capability): the query as the app builds it, Kino's verdict field by
 // field, and how the info page would use it (within the app's 6 s)
 //   node sdk/run.mjs <plugin dir> meta tt0133093 [movie|series]          (KINO_LANG=es: the person's language)
@@ -60,6 +64,7 @@
 //                          conflict:1:409 also passes the origin's HTTP status (401, 403 or 409)
 //   --live                 resolve only: the ref is a live channel's (liveStreamHosts "any" applies)
 //   --within <browse ref>  search only: Kino's scoped search ({ q, type: "any", within, cursor }); null = "can't search there"
+//   --device tv|phone      what kino.device says (default KINO_DEVICE, else phone): test the TV side of your plugin
 // The first argument is the plugin's entry file or the folder that holds kino-plugin.json. The
 // result goes to stdout as JSON; everything else (kino.log, console.*, dropped entries, errors)
 // goes to stderr.
@@ -70,14 +75,18 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { checkOutput, checkSettingsOutput, contract, markSearchHits, segmentSkip, validateManifest } from "./contract.mjs";
 import { contrast, formatRatio, resolvePalette } from "./palette.mjs";
 import { createKino, errorReport, signingLane } from "./kino-shim.mjs";
+import { loadPlugin, missingGlobalLines, scanMissingGlobals } from "./sandbox.mjs";
+import { actionEvent, checkPanelOutput, fakeContext, langOf, PLAYER_EVENTS, TRIGGERS } from "./panel.mjs";
 import { channelLines, download, guideFor, keepStart, loadPlaylist, summarisePlaylist, summaryLines } from "./live-playlist.mjs";
 
 const FUNCTIONS = ["search", "home", "browse", "episodes", "resolve", "migrate", "section", "categories", "subtitles", "track", "segments", "meta"];
 // apiVersion 6's settings form: not capabilities, so no capability check; the app runs them even before a required setting is typed.
 const SETTINGS_FUNCTIONS = ["settingsStatus", "action", "validateSettings"];
+// apiVersion 9's player panel: not capabilities either (the manifest's "panel" decides), and Kino calls them with a context.
+const PANEL_FUNCTIONS = ["panel", "panelAction", "playerEvent"];
 // `live <sub>` names one of the channels capability's exports.
 const LIVE = { categories: "liveCategories", channels: "liveChannels", guide: "guide", search: "liveSearch" };
-const USAGE = "usage: node sdk/run.mjs [--config k=v] [--record f | --replay f] [--raw] <plugin.js | plugin folder> <search|home|browse|episodes|resolve|migrate|sign> [argument] [cursor]\n"
+const USAGE = "usage: node sdk/run.mjs [--config k=v] [--record f | --replay f] [--raw] [--device tv|phone] <plugin.js | plugin folder> <search|home|browse|episodes|resolve|migrate|sign> [argument] [cursor]\n"
   + "       node sdk/run.mjs [--config k=v] [--raw] <plugin folder> <section [tab] | categories | theme>\n"
   + "       node sdk/run.mjs [--config k=v] [--raw] <plugin folder> <settingsStatus | action <key> | validateSettings '<json>'>\n"
   + "       node sdk/run.mjs [--config k=v] <plugin folder> live <categories | channels <categoryId> [cursor] | guide <id,id> | search <query>>\n"
@@ -85,6 +94,7 @@ const USAGE = "usage: node sdk/run.mjs [--config k=v] [--record f | --replay f] 
   + "       node sdk/run.mjs [--config k=v] <plugin folder> track <start|progress|stop|watched> [JSON]\n"
   + "       node sdk/run.mjs [--config k=v] <plugin folder> segments <ttID [durationMs] | tmdb:ID season episode [durationMs] | JSON>\n"
   + "       node sdk/run.mjs [--config k=v] [--raw] <plugin folder> meta <ttID | tmdb:ID | kitsu:ID | mal:ID | anilist:ID | JSON> [movie|series] [more ids] [lang=xx] [id=<source id>]\n"
+  + "       node sdk/run.mjs [--context '<json>'] <plugin folder> <panel <ref> [tab] | panelAction <ref> <key> <press|change|submit|tab|open> ['<value json>'] ['<values json>'] | playerEvent <ref> <type> ['<detail json>']>\n"
   + "       node sdk/run.mjs live playlist <url|file> [--epg <url|file>]\n"
   + "       env: KINO_META_FIXTURE=<json> (kino.meta), KINO_TMDB_KEY=<your TMDB key> or KINO_TMDB_FIXTURE=<json> (kino.tmdb)";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -145,7 +155,7 @@ function fail(message) {
 }
 
 export function parseArgs(argv) {
-  const opts = { config: {}, record: null, replay: null, raw: false, epg: null, live: false, retry: null, within: null };
+  const opts = { config: {}, record: null, replay: null, raw: false, epg: null, live: false, retry: null, within: null, context: null, device: null };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -157,8 +167,19 @@ export function parseArgs(argv) {
     } else if (a === "--record") opts.record = argv[++i];
     else if (a === "--replay") opts.replay = argv[++i];
     else if (a === "--raw") opts.raw = true;
+    else if (a === "--context") {
+      let c;
+      try { c = JSON.parse(argv[++i] || ""); } catch (e) { throw new Error(`--context needs a JSON object: ${e.message}`); }
+      if (c === null || typeof c !== "object" || Array.isArray(c)) throw new Error("--context needs a JSON object");
+      opts.context = c;
+    }
     else if (a === "--epg") opts.epg = argv[++i];
     else if (a === "--live") opts.live = true;
+    else if (a === contract.kinoDevice.kitFlag) {
+      const d = argv[++i];
+      if (!contract.kinoDevice.values.includes(d)) throw new Error(`${contract.kinoDevice.kitFlag} takes ${contract.kinoDevice.values.join(" or ")}`);
+      opts.device = d;
+    }
     else if (a === "--within") {
       const ref = argv[++i];
       if (ref === undefined || ref === "") throw new Error("--within needs the browse ref of a \"Ver más\" page");
@@ -196,7 +217,7 @@ async function main() {
     fn = LIVE[rest[0]];
     rest = rest.slice(1);
   }
-  if (!targetArg || !(FUNCTIONS.includes(fn) || SETTINGS_FUNCTIONS.includes(fn) || fn === "sign" || fn === "theme" || Object.values(LIVE).includes(fn))) return fail(USAGE);
+  if (!targetArg || !(FUNCTIONS.includes(fn) || SETTINGS_FUNCTIONS.includes(fn) || PANEL_FUNCTIONS.includes(fn) || fn === "sign" || fn === "theme" || Object.values(LIVE).includes(fn))) return fail(USAGE);
   if (opts.record && opts.replay) return fail("--record and --replay can't be used together");
   const target = resolve(targetArg);
   let stat;
@@ -212,19 +233,23 @@ async function main() {
   if (fn === "theme") {
     const declared = manifest.theme || {};
     const p = resolvePalette(declared);
-    const lines = contract.manifest.theme.tokens.map((k) => `${k.padEnd(11)}${(declared[k] || "-").padEnd(9)}${declared[k] && p.kept.includes(k) ? "se usa" : "Kino"}`.padEnd(11 + 9 + 6) + `  ${p[k]}`);
-    lines.push(`onAccent sobre accent: ${formatRatio(contrast(p.onAccent, p.accent))}:1`, `accent sobre background: ${formatRatio(contrast(p.accent, p.background))}:1`, `highlight sobre background: ${formatRatio(contrast(p.highlight, p.background))}:1`);
-    for (const w of p.warnings) lines.push(`aviso: ${w}`);
+    const lines = contract.manifest.theme.tokens.map((k) => `${k.padEnd(11)}${(declared[k] || "-").padEnd(9)}${declared[k] && p.kept.includes(k) ? "used" : "Kino"}`.padEnd(11 + 9 + 6) + `  ${p[k]}`);
+    lines.push(`onAccent on accent: ${formatRatio(contrast(p.onAccent, p.accent))}:1`, `accent on background: ${formatRatio(contrast(p.accent, p.background))}:1`, `highlight on background: ${formatRatio(contrast(p.highlight, p.background))}:1`);
+    for (const w of p.warnings) lines.push(`warning: ${w}`);
     process.stdout.write(lines.join("\n") + "\n");
     return 0;
   }
   if (fn === "section" && !manifest.section) return fail('the manifest does not declare "section"');
+  if (PANEL_FUNCTIONS.includes(fn)) {
+    if (!(manifest.apiVersion >= contract.manifest.panel.apiVersion)) return fail(`${fn} needs apiVersion ${contract.manifest.panel.apiVersion} in kino-plugin.json`);
+    if (fn !== "playerEvent" && !manifest.panel) return fail('the manifest does not declare "panel": Kino shows no panel button for this plugin');
+  }
   if (fn === "categories" && !(manifest.apiVersion >= contract.output.categories.apiVersion && manifest.capabilities.includes("browse"))) return fail("categories needs apiVersion 6 and the browse capability");
   const capability = Object.values(LIVE).includes(fn) ? "channels" : fn === "sign" ? "resolve" : fn === contract.tracking.export ? contract.tracking.capability : fn;
   // `subtitles` may be exported by any plugin without the capability (Kino asks whoever exports it).
   const anyPlugin = contract.capabilities.anyPluginExports.includes(fn);
   if (fn === "meta" && !manifest.capabilities.includes("meta")) return fail(NO_META_CAPABILITY);
-  if (!anyPlugin && !SETTINGS_FUNCTIONS.includes(fn) && fn !== "section" && fn !== "categories" && !manifest.capabilities.includes(capability)) return fail(`the manifest does not declare "${capability}" in capabilities`);
+  if (!anyPlugin && !SETTINGS_FUNCTIONS.includes(fn) && !PANEL_FUNCTIONS.includes(fn) && fn !== "section" && fn !== "categories" && !manifest.capabilities.includes(capability)) return fail(`the manifest does not declare "${capability}" in capabilities`);
   // "catalogOnly": true (Kino 0.9.54): Kino never calls resolve (nor sign); it still runs here, for the older Kino it serves.
   if (manifest.catalogOnly && capability === "resolve") process.stderr.write(`· ${CATALOG_ONLY_RESOLVE_NOTE}\n`);
 
@@ -237,6 +262,7 @@ async function main() {
     config,
     record: opts.record && resolve(opts.record),
     replay: opts.replay && resolve(opts.replay),
+    device: opts.device,
   });
   const missing = (manifest.settings || []).filter((s) => s.required && (kino.config.get(s.key) === undefined || kino.config.get(s.key) === ""));
   if (missing.length && !SETTINGS_FUNCTIONS.includes(fn)) {
@@ -251,16 +277,18 @@ async function main() {
   const scoped = contract.search.scoped;
   if (opts.within !== null && !manifest.capabilities.includes(scoped.capability)) return fail(`--within needs "${scoped.capability}" in capabilities (apiVersion ${scoped.apiVersion})`);
   // sign() runs in its own lane inside the app: no network, storage, cookies or sleep.
-  globalThis.kino = fn === "sign" ? signingLane(kino) : kino;
+  const pluginKino = fn === "sign" ? signingLane(kino) : kino;
+  globalThis.kino = pluginKino;
 
-  // Kino loads the entry as an ES module. Node decides that from the extension and the nearest
-  // package.json (Node 18 and 20 treat a plain .js file as CommonJS), so load a copy named .mjs.
-  // Stack traces name that copy; its line numbers are the entry's.
-  const scratch = mkdtempSync(join(tmpdir(), "kino-plugin-"));
+  // The entry runs in a sandbox with only what Kino gives a plugin (sandbox.mjs): a global Node has and Kino lacks is a
+  // ReferenceError here too. Without Node's vm modules (the kit imported as a library) it is a plain import and says so.
   try {
-    const copy = join(scratch, "plugin.mjs");
-    writeFileSync(copy, readFileSync(entryPath));
-    const plugin = await import(pathToFileURL(copy).href);
+    const found = scanMissingGlobals(readFileSync(entryPath, "utf8"));
+    missingGlobalLines(found).forEach((l) => stderr(`! ${l}`));
+    const loaded = await loadPlugin(entryPath, pluginKino);
+    if (!loaded.sandboxed) stderr("· running without the sandbox (KINO_SDK_NO_SANDBOX=1): the plugin can see Node's globals that Kino lacks");
+    const plugin = loaded.plugin;
+    if (fn === "playerEvent" && typeof plugin[fn] !== "function") return fail(`${manifest.entry} does not export playerEvent(): Kino never calls this plugin for player events (it is optional)`);
     if (typeof plugin[fn] !== "function") return fail(fn === "meta" ? noMetaExport(manifest.entry) : `${manifest.entry} does not export ${fn}()`);
     resetBudget();
     if (fn === "meta") {
@@ -272,6 +300,15 @@ async function main() {
       saveTape();
       if (opts.raw) { process.stdout.write(JSON.stringify(answer === undefined ? null : answer, null, 2) + "\n"); return 0; }
       return printMeta(answer, query, manifest, servers);
+    }
+    if (PANEL_FUNCTIONS.includes(fn)) {
+      // Built before the call: a bad argument is the command's fault (exit 2), not the plugin's.
+      let request;
+      try { request = panelRequest(fn, rest, opts.context); } catch (e) { return fail(e.message); }
+      const answer = await callPanel(plugin, fn, request);
+      saveTape();
+      if (opts.raw) { process.stdout.write(JSON.stringify(answer === undefined ? null : answer, null, 2) + "\n"); return 0; }
+      return printPanelAnswer(fn, answer, request.context, servers);
     }
     const out = await call(plugin, fn, rest, opts);
     saveTape();
@@ -348,7 +385,7 @@ async function main() {
     if (fn === "meta") stderr(META_FAILED_IN_APP(manifest.id));
     return 1;
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    // nothing to clean up: the sandbox loads the entry from memory
   }
 }
 
@@ -467,6 +504,63 @@ export function segmentsArg(rest) {
   const out = episode ? { kind: "episode", ids: {}, show: { ids: id }, season: nums[0], episode: nums[1] } : { kind: "movie", ids: id };
   if (Number.isInteger(duration) && duration > 0) out.durationMs = duration;
   return out;
+}
+
+// ---------- the player panel (apiVersion 9) ----------
+
+/**
+ * One panel call as the app makes it: `{ context, event? }`. [rest] after the function name: `<ref> [tab]` for panel,
+ * `<ref> <key> <trigger> ['<value json>'] ['<values json>']` for panelAction (event `{ key, trigger, values, value? }`),
+ * `<ref> <type> ['<detail json>']` for playerEvent (event `{ type, ...detail }`: the app puts the detail's keys flat).
+ * [over] (`--context`) is merged over the fake context. Throws on a bad argument.
+ */
+export function panelRequest(fn, rest, over = null) {
+  const ref = rest[0] === undefined ? "" : String(rest[0]);
+  if (!ref) throw new Error(`${fn} needs the ref of the title that plays`);
+  const json = (text, what, shape) => {
+    let v;
+    try { v = JSON.parse(text); } catch (e) { throw new Error(`the ${what} must be JSON: ${e.message}`); }
+    if (shape === "object" && (v === null || typeof v !== "object" || Array.isArray(v))) throw new Error(`the ${what} must be a JSON object`);
+    return v;
+  };
+  if (fn === "panel") {
+    const tab = rest[1] === undefined || rest[1] === "" ? {} : { tab: String(rest[1]) };
+    return { context: fakeContext(ref, { ...tab, ...(over || {}) }) };
+  }
+  if (fn === "panelAction") {
+    const [, key, trigger, value, values] = rest;
+    if (!key) throw new Error("panelAction needs the key of the element");
+    if (!TRIGGERS.includes(trigger)) throw new Error(`panelAction needs a trigger: ${TRIGGERS.join(", ")}`);
+    const event = actionEvent(String(key), trigger, value === undefined ? undefined : json(value, "value", "any"), values === undefined ? undefined : json(values, "values", "object"));
+    return { context: fakeContext(ref, over || {}), event };
+  }
+  const type = rest[1];
+  if (!PLAYER_EVENTS.includes(type)) throw new Error(`playerEvent needs a type: ${PLAYER_EVENTS.join(", ")}`);
+  const detail = rest[2] === undefined ? {} : json(rest[2], "detail", "object");
+  return { context: fakeContext(ref, over || {}), event: { type, ...detail } };
+}
+
+/** The plugin's export called with the app's arguments: `panel(context)`, `panelAction(event, context)`, `playerEvent(event, context)`. */
+export async function callPanel(plugin, fn, { context, event }, timeoutMs = contract.timeoutsMs[fn]) {
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${fn} did not answer within ${timeoutMs / 1000} s: Kino stops waiting${fn === "panel" ? " and shows no panel" : ""}`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(() => (fn === "panel" ? plugin.panel(context) : plugin[fn](event, context))), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Prints what the app keeps of a panel export's [answer] (`· dropped: <reason>` on stderr, the result on stdout); the exit code. */
+function printPanelAnswer(fn, answer, context, servers) {
+  const checked = checkPanelOutput(fn, answer, servers, { context, lang: langOf(context) });
+  checked.drops.forEach((d) => stderr(`· dropped: ${d}`));
+  if (!checked.ok) { stderr("✗ the whole panel is invalid: Kino shows no panel"); return 1; }
+  if (fn === "panelAction" && checked.value.patch) stderr("· a patch is applied by Kino only to a key that is on screen; one that names no element is dropped there");
+  process.stdout.write(JSON.stringify(checked.value, null, 2) + "\n");
+  return 0;
 }
 
 // ---------- meta (apiVersion 6) ----------

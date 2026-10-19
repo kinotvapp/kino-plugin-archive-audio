@@ -28,6 +28,10 @@ function signedPlugin({ source = SOURCE, key = generateAuthorKey(), binding = "o
   return { dir, key };
 }
 
+// These tests read files of the Kino repo itself (docs/plugins/, plugins/archive-org, its .gitignore). A template does
+// not carry them, so they are skipped here and run in the Kino repo.
+const NEEDS_KINO_REPO = "needs files of the Kino repo that this template does not have";
+
 test("signEntry: an Ed25519 signature over the documented message, checked independently", () => {
   const { pem, raw } = generateAuthorKey();
   const sig = signEntry(Buffer.from(SOURCE), "Owner/Repo/Sub", "demo", "1.2.3", pem);
@@ -69,7 +73,7 @@ test("manifest: signature is apiVersion 5, well-formed lowercase hex; below 5 it
   const old = validateManifest(JSON.stringify({ ...MANIFEST, apiVersion: 4, signature: "x" }));
   assert.equal(old.ok, true);
   assert.equal("signature" in old.manifest, false);
-  assert.equal(validateManifest(JSON.stringify({ ...MANIFEST, apiVersion: contract.maxApiVersion + 1 })).message, "Este plugin necesita una versión más nueva de Kino");
+  assert.equal(validateManifest(JSON.stringify({ ...MANIFEST, apiVersion: contract.maxApiVersion + 1 })).message, "This plugin needs a newer version of Kino");
 });
 
 test("validate: a signed plugin passes with the author's fingerprint and the Kino version note", async () => {
@@ -79,7 +83,7 @@ test("validate: a signed plugin passes with the author's fingerprint and the Kin
     assert.equal(r.ok, true, r.problems.join("\n"));
     assert.deepEqual(r.consent.map((c) => c.text), ["Firmado por su autor"]);
     assert.ok(r.notes.includes(`Clave del autor: ${fingerprint(key.raw)} (Kino la muestra en los detalles del plugin, no en la ventana de instalación)`));
-    assert.ok(r.notes.some((n) => /requiere Kino 0\.9\.45/.test(n)));
+    assert.ok(r.notes.some((n) => /needs Kino 0\.9\.45/.test(n)));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -141,7 +145,7 @@ test("seal.mjs --keygen writes a private key once; --sign writes the signature i
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("backward compatibility: the example plugin validates exactly as before, with no signature note", async () => {
+test("backward compatibility: the example plugin validates exactly as before, with no signature note", { skip: NEEDS_KINO_REPO }, async () => {
   const r = await validate(join(here, "..", "..", "archive-org"));
   assert.equal(r.ok, true);
   assert.deepEqual(r.consent.map((c) => c.text), ["Se conectará a los servidores que escribas en su configuración", "Puede descargar videos para verlos sin conexión"]);

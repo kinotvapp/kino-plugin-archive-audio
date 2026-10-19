@@ -20,7 +20,7 @@ export const TABLES = {
     ["Loading the module (its top level)", `${c.timeoutsMs.load / 1000} s`],
     ["Idle sandbox", `closed after ${c.runtime.idleCloseMs / 60000} minutes without calls`],
     ["Consecutive timeouts", `${c.runtime.timeoutsBeforeUnresponsive} in a row and Kino disables the plugin ("No responde")`],
-    ["`kino.fetch`", `https only (or the person's own server as typed, or \`http\` on a host declared \`insecureHttp\`); ${c.fetch.defaultTimeoutMs / 1000} s default, ${c.fetch.maxTimeoutMs / 1000} s maximum; response body at most ${kb(c.fetch.maxBodyBytes)}; the request (URL, headers and body) at most ${n(c.fetch.maxRequestChars)} characters; at most ${c.fetch.maxRequestsPerCall} requests per call, every hop counted, refused ones included (${c.fetch.nuvioMaxRequestsPerCall} for a plugin converted from a Nuvio scraper); at most ${c.fetch.maxInFlight} fetches in flight at once; at most ${c.fetch.maxHostQuestionsPerCall} host questions per call; at most ${c.fetch.maxRedirects} redirects per request`],
+    ["`kino.fetch`", `https only (or the person's own server as typed, or \`http\` on a host declared \`insecureHttp\`); ${c.fetch.defaultTimeoutMs / 1000} s default, ${c.fetch.maxTimeoutMs / 1000} s maximum; response body at most ${kb(c.fetch.maxBodyBytes)}; the request (URL, headers and body) at most ${n(c.fetch.maxRequestChars)} characters; at most ${c.fetch.maxRequestsPerCall} requests per call, every hop counted, refused ones included (${c.fetch.nuvioMaxRequestsPerCall} for a plugin converted from a Nuvio scraper); at most ${c.fetch.maxInFlight} fetches in flight at once; at most ${c.fetch.maxHostQuestionsPerCall} host questions per call; at most ${c.fetch.maxRedirects} redirects per request; under \`"fetchHosts": "any"\`, a host reached only through it: https on port ${c.fetch.anyHost.port}, a dotted name or public IPv4 address, at most ${c.fetch.anyHost.perSite} requests a minute per site and ${c.fetch.anyHost.perPlugin} every ${c.fetch.anyHost.perPluginWindowMs / 60000} minutes per plugin (${c.fetch.anyHost.nuvioPerSite} / ${n(c.fetch.anyHost.nuvioPerPlugin)} for a converted Nuvio scraper), else \`rate_limited\``],
     ["Cookies", `${c.cookies.maxPerHost} per domain, ${kb(c.cookies.maxTotalBytes)} in total per plugin`],
     ["`kino.storage`", `${kb(c.storage.maxTotalBytes)} per plugin; an entry's optional \`ttlMs\` is 1..${n(c.storage.maxTtlMs)} ms (30 days)`],
     ["`kino.sleep`", `0 to ${n(c.sleep.maxMs)} ms per call`],
@@ -61,11 +61,12 @@ export const TABLES = {
     ["`unavailable`", "\"{plugin} no está disponible ahora\""],
   ].filter(([code]) => c.errors.codes.includes(code.replace(/`/g, "")))),
   fetchErrors: () => table(["`e.code`", "When"], [
-    ["`host_not_allowed`", "the host (or a redirect hop) is not one you declared or the person typed, or it is `http` on a declared host not marked `insecureHttp`"],
+    ["`host_not_allowed`", "the host (or a redirect hop) is not one you declared or the person typed, or it is `http` on a declared host not marked `insecureHttp`; under `\"fetchHosts\": \"any\"`, a host reached only through it over `http`, on a port other than 443, or a single-label name"],
     ["`timeout`", "no complete answer within `timeoutMs`"],
     ["`network`", "the connection failed, or too many redirects"],
     ["`too_large`", "the request over the size cap, or a body over 5 MB"],
     ["`invalid_request`", "a bad URL, method, `redirect` or `body`, or more requests than a call allows"],
+    ["`rate_limited`", `under \`"fetchHosts": "any"\`, too many requests to hosts reached only through it: more than ${c.fetch.anyHost.perSite} a minute to one site or ${c.fetch.anyHost.perPlugin} every ${c.fetch.anyHost.perPluginWindowMs / 60000} minutes in all (${c.fetch.anyHost.nuvioPerSite} and ${c.fetch.anyHost.nuvioPerPlugin.toLocaleString("en-US")} for a plugin converted from a Nuvio scraper)`],
   ].filter(([code]) => c.fetch.errorCodes.includes(code.replace(/`/g, "")))),
 };
 

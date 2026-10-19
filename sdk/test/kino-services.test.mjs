@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { contract } from "../contract.mjs";
-import { createKino, errorReport, kinoMetaRequest, kinoTmdbRequest, signingLane, tokenBucket } from "../kino-shim.mjs";
+import { createKino, errorReport, kinoMetaRequest, kinoTmdbRequest, normaliseMetaTitle, pickMetaTitle, signingLane, tokenBucket } from "../kino-shim.mjs";
 import { unguardedBrowserNotes, unguardedServiceNotes } from "../validate.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -42,11 +42,15 @@ async function code(promise) {
   return "no error";
 }
 
-test("contract: kino.meta and kino.tmdb are additive (no new apiVersion) and pinned", () => {
-  // apiVersion 8 is the music/podcast kinds' gate; kino.meta and kino.tmdb add none of their own.
-  assert.equal(contract.apiVersion, 8);
-  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54" });
-  assert.deepEqual(contract.additiveFromApp, { "kino.meta": "0.9.53", "kino.tmdb": "0.9.53", catalogOnly: "0.9.54", "kino.browser.captureAll": "0.9.54" });
+// These tests read files of the Kino repo itself (docs/plugins/, plugins/archive-org, its .gitignore). A template does
+// not carry them, so they are skipped here and run in the Kino repo.
+const NEEDS_KINO_REPO = "needs files of the Kino repo that this template does not have";
+
+test("contract: kino.meta and kino.tmdb are additive (no new apiVersion) and pinned", { skip: NEEDS_KINO_REPO }, () => {
+  // apiVersion 9 (Kino 0.9.55) brought kino.meta by title among others; kino.meta and kino.tmdb themselves add none.
+  assert.equal(contract.apiVersion, 11);
+  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66" });
+  assert.deepEqual(contract.additiveFromApp, { "kino.meta": "0.9.53", "kino.tmdb": "0.9.53", catalogOnly: "0.9.54", "kino.browser.captureAll": "0.9.54", "fetch.errorHost": "0.9.55", "kino.fetchAnyHost": "0.9.55", "kino.meta.byTitle": "0.9.55", "kino.device": "0.9.55", "kino.seed": "0.9.55" });
   assert.deepEqual(contract.kinoMeta.idKeys, ["imdb", "tmdb", "tvdb", "kitsu", "mal", "anilist"]);
   assert.equal(contract.kinoMeta.perMinute, 30);
   assert.equal(contract.kinoTmdb.perWindow, 40);
@@ -80,7 +84,7 @@ test("kino.meta: the query is checked like the app does", () => {
   assert.deepEqual(kinoMetaRequest({ type: "movie", ids: { imdb: "tt0133093", trakt: 4, mal: null } }), { type: "movie", ids: { imdb: "tt0133093" } });
 });
 
-test("kino.meta: null by default, a fixture's answer when one is given", async () => {
+test("kino.meta: null by default, a fixture's answer when one is given", { skip: NEEDS_KINO_REPO }, async () => {
   assert.equal(await kinoWith().meta({ type: "movie", ids: { imdb: "tt0133093" } }), null);
   const kino = kinoWith({ metaFixture: join(fixtures, "meta.json") });
   assert.equal((await kino.meta({ type: "movie", ids: { imdb: "tt0133093" } })).ids.tmdb, 603);
@@ -195,7 +199,7 @@ test("kino.tmdb: an answer is cached 10 minutes by path and params", async () =>
   assert.equal(calls.length, 3);
 });
 
-test("kino.tmdb: 40 calls per 10 s per plugin, then rate_limited", async () => {
+test("kino.tmdb: 40 calls per 10 s per plugin, then rate_limited", { skip: NEEDS_KINO_REPO }, async () => {
   const clock = fakeClock();
   const kino = kinoWith({ tmdbFixture: join(fixtures, "tmdb.json"), now: clock.now });
   for (let i = 0; i < contract.kinoTmdb.perWindow; i++) await kino.tmdb("/movie/603");
@@ -204,7 +208,7 @@ test("kino.tmdb: 40 calls per 10 s per plugin, then rate_limited", async () => {
   await kino.tmdb("/movie/603");
 });
 
-test("kino.tmdb: a fixture answers offline, by path and sorted params or by path", async () => {
+test("kino.tmdb: a fixture answers offline, by path and sorted params or by path", { skip: NEEDS_KINO_REPO }, async () => {
   const kino = kinoWith({ tmdbFixture: join(fixtures, "tmdb.json") });
   assert.equal((await kino.tmdb("/trending/movie/week", { language: "es-MX" })).results[0].id, 603);
   assert.equal((await kino.tmdb("/movie/603", { language: "es-MX" })).imdb_id, "tt0133093");
@@ -283,4 +287,69 @@ test("validate: the new capture options without checking kino.browser.captureAll
   assert.equal(unguardedBrowserNotes("await kino.browser.capture(u, { waitForCookie: 'cf_clearance' })").length, 1);
   assert.deepEqual(unguardedBrowserNotes("if (kino.browser.captureAll) await kino.browser.capture(u, { returnCookiesOnTimeout: true })"), []);
   assert.match(unguardedBrowserNotes("kino.browser.capture(u, { captureAll: true })")[0], /0\.9\.54/);
+});
+
+// Kino 0.9.55: kino.meta({ type, title, year? }) (contract.kinoMeta.byTitle), the vectors of the app's KinoMetaTest.
+test("kino.meta by title: the query is checked like the app does", () => {
+  const bad = (q) => assert.throws(() => kinoMetaRequest(q), (e) => e.code === "invalid_request");
+  assert.deepEqual(kinoMetaRequest({ type: "movie", title: "  Matrix ", year: 1999 }), { type: "movie", title: "Matrix", year: 1999 });
+  assert.deepEqual(kinoMetaRequest({ type: "movie", title: "Matrix", year: "1999", lang: "es" }), { type: "movie", title: "Matrix", year: 1999, lang: "es" });
+  assert.deepEqual(kinoMetaRequest({ type: "series", title: "Dark", ids: {} }), { type: "series", title: "Dark" });
+  assert.deepEqual(kinoMetaRequest({ type: "movie", title: "Matrix", ids: { tmdb: 603 } }), { type: "movie", ids: { tmdb: 603 } });
+  bad({ type: "movie", title: "" });
+  bad({ type: "movie", title: "   " });
+  bad({ type: "movie", title: 7 });
+  bad({ type: "movie", title: "a".repeat(contract.kinoMeta.byTitle.titleMaxChars + 1) });
+  for (const year of [1869, 2101, 1999.5, "99"]) bad({ type: "movie", title: "Matrix", year });
+  bad({ type: "movie", ids: { tmdb: 603 }, year: 1999 });
+  bad({ type: "tv", title: "Matrix" });
+  bad({ type: "movie", ids: "x", title: "Matrix" });
+});
+
+test("kino.meta by title: Kino's pick - exact, year, ambiguous, kind", () => {
+  const hit = (id, title, year, type = "movie", originalTitle = title) => ({ id, type, title, originalTitle, year });
+  assert.equal(normaliseMetaTitle("¡Amélie!"), "amelie");
+  const amelie = [hit(194, "Amélie", "2001", "movie", "Le Fabuleux Destin d'Amélie Poulain"), hit(5, "Amelia", "2009")];
+  assert.equal(pickMetaTitle(amelie, "movie", "amelie"), 194);
+  assert.equal(pickMetaTitle(amelie, "movie", "Le fabuleux destin d’Amélie Poulain!"), 194);
+  assert.equal(pickMetaTitle(amelie, "movie", "Amél"), null);
+  const dune = [hit(10, "Dune", "1984"), hit(438631, "Dune", "2021"), hit(11, "Dune", "2000")];
+  assert.equal(pickMetaTitle(dune, "movie", "Dune"), null);
+  assert.equal(pickMetaTitle(dune, "movie", "Dune", 2021), 438631);
+  assert.equal(pickMetaTitle(dune, "movie", "Dune", 2022), 438631);
+  assert.equal(pickMetaTitle(dune, "movie", "Dune", 1985), 10);
+  assert.equal(pickMetaTitle(dune, "movie", "Dune", 2010), null);
+  assert.equal(pickMetaTitle([hit(1, "Eco", "2000"), hit(2, "Eco", "2002")], "movie", "Eco", 2001), null);
+  assert.equal(pickMetaTitle([hit(1, "Eco", "2000"), hit(2, "Eco", "2001")], "movie", "Eco", 2001), 2);
+  const office = [hit(1, "The Office", "2005", "tv"), hit(2, "The Office", "2005", "tv")];
+  assert.equal(pickMetaTitle(office, "tv", "The Office", 2005), null);
+  assert.equal(pickMetaTitle([office[0], office[0]], "tv", "The Office"), 1);
+  const fargo = [hit(1, "Fargo", "1996", "movie"), hit(60622, "Fargo", "2014", "tv")];
+  assert.equal(pickMetaTitle(fargo, "tv", "Fargo"), 60622);
+  assert.equal(pickMetaTitle(fargo, "tv", "Fargo", 1996), null);
+});
+
+test("kino.meta by title: the feature flag, and the fixture keyed by normalised title and year", async () => {
+  const v9 = (opts = {}) => createKino({ ...MANIFEST, apiVersion: 9 }, { env: NO_ENV, tmdbKey: null, ...opts }).kino;
+  assert.equal(v9().meta.byTitle, true);
+  assert.equal(await v9().meta({ type: "movie", title: "Matrix" }), null);
+  // Below apiVersion 9 there is no flag and a title is an unknown key: the query needs ids, as on an older Kino.
+  const v8 = createKino({ ...MANIFEST, apiVersion: 8 }, { env: NO_ENV, tmdbKey: null }).kino;
+  assert.equal(v8.meta.byTitle, undefined);
+  assert.equal(await code(v8.meta({ type: "movie", title: "Matrix", year: 1999 })), "invalid_request");
+  assert.throws(() => kinoMetaRequest({ type: "movie", title: "Matrix" }, 8), (e) => e.code === "invalid_request");
+  const answer = { title: "Matrix", ids: { tmdb: 603 }, sources: ["tmdb"] };
+  const kino = v9({ metaFixture: { "movie:title:the matrix:1999": answer, "series:title:dark": { title: "Dark", ids: { tmdb: 70523 }, sources: ["tmdb"] } } });
+  assert.equal((await kino.meta({ type: "movie", title: "The Matrix!", year: 1999 })).ids.tmdb, 603);
+  assert.equal(await kino.meta({ type: "movie", title: "The Matrix", year: 2003 }), null);
+  assert.equal((await kino.meta({ type: "series", title: "Dark", year: 2017 })).ids.tmdb, 70523);
+  assert.equal(await code(kino.meta({ type: "movie", title: "Eco", year: "dosmil" })), "invalid_request");
+});
+
+test("validate notes kino.meta by title without the byTitle check", () => {
+  const guarded = 'if (typeof kino.meta === "function" && kino.meta.byTitle === true) await kino.meta({ type: "movie", title: t, year });';
+  assert.deepEqual(unguardedServiceNotes(guarded), []);
+  const notes = unguardedServiceNotes('if (typeof kino.meta === "function") await kino.meta({ type: "movie", title });');
+  assert.deepEqual(notes, ["kino.meta con title (sin ids) existe desde Kino 0.9.55: comprueba kino.meta.byTitle === true antes; en versiones anteriores responde invalid_request"]);
+  assert.deepEqual(unguardedServiceNotes('if (typeof kino.meta === "function") await kino.meta({ type: "movie", ids: { tmdb: 603 } });'), []);
 });

@@ -31,7 +31,7 @@ const manifest = (extra = {}) => JSON.stringify({
 });
 
 test("contract.json is the one the app pins", () => {
-  assert.equal(contract.apiVersion, 23);
+  assert.equal(contract.apiVersion, 27);
   // apiVersion 5 stays what Kino 0.9.45 made it: the author-signed entry, nothing else.
   assert.equal(contract.manifest.signature.apiVersion, 5);
   assert.deepEqual(contract.capabilities.names, ["search", "home", "browse", "episodes", "resolve", "download", "drm", "channels", "migrate", "scopedSearch", "meta", "subtitles", "tracking", "segments", "lyrics", "playlists", "externalResolve", "nuvio", "syncProvider", "socket", "byteSource", "storageLarge", "catalog", "qrScan", "imageSource", "screen", "library", "playerPanelTab", "playerControl", "playerSlot", "room", "schedule", "ai", "shared", "identity", "notifications", "coins", "pluginStore", "files", "progress"]);
@@ -1213,7 +1213,7 @@ test("checkOutput accepts a widevine drm block only for a plugin that declares d
     assert.throws(() => checkOutput("resolve", { url: "https://example.com/v.mpd", [k]: "x" }, withDrm), /the video has DRM/);
     assert.throws(() => checkOutput("resolve", { ...stream, [k]: "x" }, withDrm), /the video has DRM/);
   }
-  assert.deepEqual(contract.output.drm, { field: "drm", types: ["widevine"] });
+  assert.deepEqual(contract.output.drm, { field: "drm", types: ["widevine", "clearkey"], listApiVersion: 24, maxOptions: 4, clearKey: { maxPairs: 8, hexDigits: 32 } });
   assert.equal(contract.output.maxHeaders, 20);
   // A protected video may still bring side audio tracks: both are kept (the app plays the audio clear).
   const both = checkOutput("resolve", { ...stream, audioTracks: [{ lang: "es", url: "https://example.com/a.aac" }, { lang: "en", url: "https://evil.example/a.aac" }] }, withDrm).value;
@@ -1469,6 +1469,9 @@ test("kino.d.ts declares exactly what the kit's kino has", () => {
   // And with "qrScan", exactly kino.qr.scan.
   const withQr = createKino(JSON.parse(manifest({ apiVersion: contract.maxApiVersion, capabilities: ["search", "resolve", "qrScan"] }))).kino;
   assert.deepEqual(Object.keys(withQr.qr).map((k) => `kino.qr.${k}=function`), declared.filter((m) => m.startsWith("kino.qr.")));
+  // And with the manifest's "visualBrowser": true (apiVersion 20), exactly open and available.
+  const withVisual = createKino({ ...JSON.parse(manifest({ apiVersion: contract.maxApiVersion })), visualBrowser: true }).kino;
+  assert.deepEqual(Object.keys(withVisual.visualBrowser).sort(), declared.filter((m) => m.startsWith("kino.visualBrowser.")).map((m) => m.slice(19).replace(/=.*/, "")).sort());
 });
 
 test("kino.seed in the kit answers nothing, never throws, and keeps the contract's keys and limits", () => {
@@ -1747,9 +1750,12 @@ test("categories: an optional list of known ids at every apiVersion, no repeats"
   for (const apiVersion of [1, 6]) {
     assert.deepEqual(validateManifest(manifest({ apiVersion, categories: ["live", "radio"] })).manifest.categories, ["live", "radio"]);
   }
-  for (const value of [["movies", "movies"], ["películas"], "live", [1]]) {
+  for (const value of [["movies", "movies"], ["películas"], "live", [1], ["Manga"], ["m"], ["1manga"], ["a".repeat(25)], ["manga", "manga"]]) {
     assert.deepEqual(validateManifest(manifest({ categories: value })), { ok: false, field: "categories", message: contract.manifest.categories.message });
   }
+  // A new type is a valid id of the pattern: lowercase letters, digits and hyphens, 2 to 24, a letter first.
+  assert.deepEqual(validateManifest(manifest({ categories: ["manga", "audio-books", "movies"] })).manifest.categories, ["manga", "audio-books", "movies"]);
+  assert.deepEqual(validateManifest(manifest({ categories: ["a".repeat(24)] })).manifest.categories, ["a".repeat(24)]);
 });
 
 test("discoverable: an optional boolean at every apiVersion; false is a note, not a problem", async () => {
@@ -4290,7 +4296,7 @@ test("the guide's kino.fetch limits row names every fetch limit the app enforces
 // apiVersion 5 is Kino 0.9.45's (the author's signature, nothing else): a v5 manifest using an apiVersion 6
 // field is refused, or reads it exactly as those apps do (an unknown field, ignored).
 test("apiVersion 5 manifests read as Kino 0.9.45 and 0.9.46 read them: every apiVersion 6 field is refused or ignored", () => {
-  assert.equal(contract.maxApiVersion, 23);
+  assert.equal(contract.maxApiVersion, 27);
   const v5 = (extra) => validateManifest(manifest({ apiVersion: 5, ...extra }));
   const ignored = v5({ debug: true, section: { label: "Mía" }, theme: { accent: "#3D5AFE" } });
   assert.equal(ignored.ok, true);
@@ -4312,7 +4318,7 @@ test("apiVersion 5 manifests read as Kino 0.9.45 and 0.9.46 read them: every api
 // apiVersion 5 shipped in Kino 0.9.45 (signature.fromApp); 6 first ships in 0.9.50 (nothing ships until the built-in source removal is done).
 test("each apiVersion above 4 names the Kino it first ships in, and validate's note reads it", async () => {
   assert.equal(contract.manifest.signature.fromApp, "0.9.45");
-  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66", "12": "0.9.74", "13": "0.9.74", "14": "0.9.74", "15": "0.9.77", "16": "0.9.78", "17": "TBD", "18": "0.9.81", "19": "0.9.81", "20": "0.9.81", "21": "0.9.82", "22": "0.9.83", "23": "0.9.83" });
+  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66", "12": "0.9.74", "13": "0.9.74", "14": "0.9.74", "15": "0.9.77", "16": "0.9.78", "17": "0.9.81", "18": "0.9.81", "19": "0.9.81", "20": "0.9.81", "21": "0.9.82", "22": "0.9.83", "23": "0.9.83", "24": "0.9.85", "25": "0.9.86", "26": "0.9.87", "27": "0.9.88" });
   const dir = mkdtempSync(join(tmpdir(), "kino-from-app-"));
   try {
     writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
@@ -4577,9 +4583,9 @@ test("browser pages: its own wider line, true keeps the old one, and page answer
   assert.equal(v({ browser: true }).manifest.browserPages, false);
   assert.equal(v({ browser: "pages" }, 5).manifest.browser, false);
   assert.deepEqual(v({ browser: "page" }), { ok: false, field: "browser", message: contract.manifest.browser.notBooleanMessage });
-  assert.equal(contract.maxApiVersion, 23);
-  assert.equal(v({}, 23).ok, true);
-  assert.equal(v({}, 24).ok, false);
+  assert.equal(contract.maxApiVersion, 27);
+  assert.equal(v({}, 27).ok, true);
+  assert.equal(v({}, 28).ok, false);
   const dir = mkdtempSync(join(tmpdir(), "kino-browser-page-"));
   try {
     writeFileSync(join(dir, "plugin.js"), "export async function search(q){ try { await kino.browser.page('https://example.com/?s=' + q, { waitFor: 'article' }) } catch (e) { return [{ id: e.code, title: e.code, ref: e.code, kind: 'movie' }] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
@@ -5119,7 +5125,7 @@ test("catalogOnly: resolve may be left out, one of home/browse/search/meta is ne
   assert.deepEqual(validateManifest(manifest({ capabilities: ["home"] })), { ok: false, field: "capabilities", message: 'The plugin must declare "resolve"' });
   assert.equal(contract.additiveFromApp.catalogOnly, "0.9.54");
   // No apiVersion of its own: catalogOnly is valid at every apiVersion.
-  assert.equal(contract.apiVersion, 23);
+  assert.equal(contract.apiVersion, 27);
 });
 
 test("catalogOnly: validate prints the consent line and what an older Kino does with it", async () => {

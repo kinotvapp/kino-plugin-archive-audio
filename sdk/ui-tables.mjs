@@ -8,7 +8,7 @@
 // (`<a id="..."></a>`) and its props block. A widget the contract adds without a description here fails the generator on
 // purpose, and so does a contract property (layoutProps, fieldProps, styleProps, uiOps, answerFields, goShapes, limits)
 // this file does not describe: the page can never silently fall behind the contract.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { contract, kb } from "./contract.mjs";
@@ -115,12 +115,12 @@ export const PROPS = {
     [S.textTime.formatField, codes(S.textTime.formats, " \\| "), code(S.textTime.formats[0]), `\`relative\` («hace 2 min», rewritten every ${S.textTime.refreshMs / 60000} minute while shown, no call to you), \`clock\` («18:42», the device's 12/24 h) or \`countdown\` («0:42» left, every second, «0:00» once reached)`],
   ],
   image: [
-    ["url", "https URL", "required without `fallback`", "a public https host (no declaration needed), or `data:image/png|jpeg|webp|gif;base64,…` of at most ${n(S.dataImage.maxChars)} characters (a picture you hold yourself, such as a book's cover; an older Kino draws the fallback); with a `fallback`, no `url` draws the fallback (an empty or refused one too, logged)"],
+    ["url", "URL", "required without `fallback`", `a public https host (no declaration needed), http on a public host where \`kino.screen.httpImages\` ([http pictures](#http-pictures)), or \`data:image/png|jpeg|webp|gif;base64,…\` of at most ${n(S.dataImage.maxChars)} characters (a picture you hold yourself, such as a book's cover; an older Kino draws the fallback); with a \`fallback\`, no \`url\` draws the fallback (an empty or refused one too, logged)`],
     ["alt", "string", "none", "what a screen reader says (`altEn` the English one)"],
     ["aspect", "`16:9` \\| `2:3` \\| `1:1` \\| `banner` \\| `w:h`", "the picture's own", "the box's shape; `w:h` is any width over height from 0.2 to 5, like `1.4:1` or `900:1300`"],
     ["fit", "`cover` \\| `contain` \\| `width`", "`cover`", "how the picture sits in its box: `cover` fills and crops, `contain` shows all of it, `width` takes the width and the picture's own height (the `aspect`, or 2:3, holds its place until it loads)"],
     ["focus", "`top` \\| `center` \\| `bottom`", "`center`", "the part of the picture that stays when `cover` crops it"],
-    [S.imageHeaders.field, "`{ Referer?, User-Agent? }`", "none", `the request headers the picture is asked with, for a site that answers only to its own page: only \`Referer\` (an https address) and \`User-Agent\`, each a text of up to ${n(S.imageHeaders.maxChars)} characters; sent only when the picture's host is in your manifest's \`hosts\` (and so is the Referer's); an older Kino asks without them ([Pictures that need a Referer](#image-headers))`],
+    [S.imageHeaders.field, "`{ Referer?, User-Agent? }`", "none", `the request headers the picture is asked with, for a site that answers only to its own page: only \`Referer\` (an https address) and \`User-Agent\`, each a text of up to ${n(S.imageHeaders.maxChars)} characters; sent only with an https picture whose host is in your manifest's \`hosts\` (and so is the Referer's), never with an http one; an older Kino asks without them ([Pictures that need a Referer](#image-headers))`],
     ["fallback", NODE, "none", `drawn in the image's box when the picture fails or there is no \`url\`: only ${codes(S.fallbackWidgets.widgets.map((w) => namesOf(w)[0]))}, at any depth, never pressed`],
   ],
   icon: [["name", ICONS.length + " names", "required", `one of Kino's icons (the [icon table](#icon-names)): ${codes(ICONS)}; the last ${EXTRA_ICONS.names.length} from apiVersion ${EXTRA_ICONS.apiVersion}`]],
@@ -202,26 +202,30 @@ export const PROPS = {
     ["icon", "a Kino icon name", "Kino's", ""],
   ],
   titleCard: [
-    ["item", "`KinoItem`", "required", "the shape a `home` row returns (`id`, `ref`, `title`, `kind`, `poster`...); a series needs your `episodes` capability"],
+    ["item", "`KinoItem`", "required", "the shape a `home` row returns (`id`, `ref`, `title`, `kind`, `poster`...); a series needs your `episodes` capability; `poster` and `backdrop` https, or http on a public host where `kino.screen.httpImages` ([http pictures](#http-pictures))"],
     SIZE,
+    ["headers", "`{ Referer?, User-Agent? }`", "none", "additive, no new apiVersion (Kino 0.9.83): the request headers every https picture of the node is asked with (each item's poster and backdrop, the hero's image and logo; never an http one), the same rules as an `Image`'s [headers](#image-headers)"],
   ],
   titleRail: [
     ["title", "string", "required", "the row's heading (`titleEn`)"],
     ["items", "`KinoItem[]`", "required", `1 to ${L.maxListItems} (${L.maxFlatTitles} when drawn all at once)`],
     ["ref", "string", "none", `with it, the row's «Ver más» opens your \`browse\` (at most ${n(L.maxRefChars)} characters)`],
     SIZE,
+    ["headers", "`{ Referer?, User-Agent? }`", "none", "additive, no new apiVersion (Kino 0.9.83): the request headers every https picture of the node is asked with (each item's poster and backdrop, the hero's image and logo; never an http one), the same rules as an `Image`'s [headers](#image-headers)"],
     ...paging(),
   ],
   titleGrid: [
     ["items", "`KinoItem[]`", "required", `1 to ${L.maxListItems} (${L.maxFlatTitles} when drawn all at once)`],
     ["columns", `1 to ${L.maxGridColumns}`, "`3`", ""],
+    ["headers", "`{ Referer?, User-Agent? }`", "none", "additive, no new apiVersion (Kino 0.9.83): the request headers every https picture of the node is asked with (each item's poster and backdrop, the hero's image and logo; never an http one), the same rules as an `Image`'s [headers](#image-headers)"],
     ...paging(),
   ],
   heroCard: [
     ["title", "string", "required", "`titleEn` the English one"],
     ["text", "string", "none", "`textEn`"],
-    ["image", "https URL", "none", "a public https picture"],
-    ["logo", "https URL", "none", "additive, no new apiVersion: a title's logo (a public https picture) drawn where the title's text is, when it loads; the text still names it for a screen reader and shows when the logo cannot"],
+    ["image", "URL", "none", "a public https picture, or http on a public host where `kino.screen.httpImages` ([http pictures](#http-pictures))"],
+    ["logo", "URL", "none", "additive, no new apiVersion: a title's logo (a public picture, as `image`) drawn where the title's text is, when it loads; the text still names it for a screen reader and shows when the logo cannot"],
+    ["headers", "`{ Referer?, User-Agent? }`", "none", "additive, no new apiVersion (Kino 0.9.83): the request headers every https picture of the node is asked with (each item's poster and backdrop, the hero's image and logo; never an http one), the same rules as an `Image`'s [headers](#image-headers)"],
     ["buttons", "button nodes", "none", `at most ${L.maxHeroButtons}`],
     ["h", "a size of the scale", "Kino's (240 dp, 320 on a TV)", "additive, no new apiVersion: the banner's height; a per-size map works (`{ compact: 200, expanded: 240 }`)"],
   ],
@@ -304,7 +308,7 @@ export const PROPS = {
     ["dense", "boolean", "`false`", `a lower row (${48} dp instead of 56, 72 with a subtitle)`],
   ],
   avatar: [
-    ["image", "https URL", "none", "a public https picture, through Kino's image pipeline; when it fails, the initials"],
+    ["image", "URL", "none", "a public https picture, or http on a public host where `kino.screen.httpImages` ([http pictures](#http-pictures)), through Kino's image pipeline; when it fails, the initials"],
     ["text", "string", "none", `initials, at most ${S.flutterNodes.avatarMaxTextChars} characters (\`textEn\`)`],
     ["icon", "a Kino icon name", "`person`", "without a picture or initials"],
     ["radius", `${S.flutterNodes.avatarMinRadius} to ${S.flutterNodes.avatarMaxRadius} (dp)`, code(S.flutterNodes.avatarDefaultRadius), "always a circle: a `CircleAvatar` takes no `borderRadius`"],
@@ -471,6 +475,7 @@ const UI_OP_TEXT = {
   clear: ["`{ clear: key }`", "empties an input"],
   open: ["`{ open: key }`", "opens a declared pop-up (replacing an open one)"],
   close: ["`{ close: key }`", "closes it when it is the one open"],
+  fullscreen: ["`{ fullscreen: true \\| false }`", "immersive mode, not a node: `true` hides Kino's title bar (its close, your screen's name, the bell) and the phone's status and navigation bars for a full-bleed canvas; `false` brings them back. Only your screen toggles it (draw your own way out, e.g. a button with `{ ui: [{ fullscreen: false }] }`); the phone's Back always closes the screen, so the person is never trapped. A restart to a new route resets it. On an older Kino that predates it the operation is an unknown one, ignored, so the screen just stays as it was"],
 };
 
 const ANSWER_TEXT = {
@@ -506,6 +511,7 @@ const GO_FIELDS = {
   syncProvider: "`{ syncProvider: true }`",
   useTheme: `\`{ useTheme: { ${S.goUseTheme.fields.join(", ")} } }\``,
   installPlugin: `\`{ installPlugin: { ${S.goInstallPlugin.fields.join(", ")} } }\``,
+  plugin: `\`{ plugin: { ${S.goPlugin.fields.join(", ")} } }\``,
   setExperience: `\`{ setExperience: ${S.goSetExperience.words.map((w) => `"${w}"`).join(" | ")} }\``,
 };
 const GO_OPENS = {
@@ -525,8 +531,10 @@ const GO_OPENS = {
   useTheme: "turns on one of this plugin's own `appThemes` as Apariencia does, or back to Kino's theme with `theme: null`; Kino shows its own toast",
   setExperience: "asks for the light or the full experience of the whole app; Kino asks the person first and changes nothing without their yes",
   installPlugin: "Kino's own install sheet for `repo` (a plain `owner/name`); nothing installs without the person's own Instalar",
+  plugin: "another plugin's screen at `route` with `args`, or its search for `query`, found by `repo` (a GitHub `owner/name[/path]`)",
 };
-const goFrom = (g) => g === "installPlugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goInstallPlugin.apiVersion}`
+const goFrom = (g) => g === "plugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goPlugin.apiVersion}`
+  : g === "installPlugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goInstallPlugin.apiVersion}`
   : g === "setExperience" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goSetExperience.apiVersion}`
   : g === "useTheme" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goUseTheme.apiVersion}`
   : g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel" || g === "syncProvider"
@@ -662,7 +670,7 @@ export function coverage(text, screen = S) {
   return out;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
   const [file, flag] = process.argv.slice(2);
   if (!file) {
     console.error("usage: node sdk/ui-tables.mjs <ui.md> [--check]");

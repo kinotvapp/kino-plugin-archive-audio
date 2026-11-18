@@ -3,7 +3,7 @@
 // enforces (a test in the app pins contract.json to its code).
 //   node sdk/guide-tables.mjs <guide.md>           rewrite every <!-- contract:NAME:start/end --> block
 //   node sdk/guide-tables.mjs <guide.md> --check   exit 1 if a block is out of date
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { contract, kb } from "./contract.mjs";
@@ -29,7 +29,7 @@ const WIDGET_TEXT = {
   col: "its children in a column", row: "its children in a row; `wrap: true` is the twelve-column layout", box: "its children stacked on each other",
   card: "Kino's card around its children", spacer: "empty space (`SizedBox` its `width`/`height`, `Spacer` its `flex` share)", divider: "a thin rule",
   scroll: "its children, scrolling", grid: "its children in `columns`", text: "plain text (`text`, `textEn`)",
-  image: "an https picture on a public host (`url`, `alt`, `fallback`)", icon: "one of Kino's icons (`name`)", badge: "a small label (`text`)",
+  image: "a picture on a public host: https, or http where `kino.screen.httpImages` is true (`url`, `alt`, `fallback`)", icon: "one of Kino's icons (`name`)", badge: "a small label (`text`)",
   progress: "a progress bar (`value`, `labelText`)", loading: "Kino's spinner (`text`)",
   list: "a lazy list of `items` (nodes), `empty` when there are none, load more", button: "a button (`labelText`, `icon`, `onPressed`, `confirm`, `submit`)",
   textInput: "a text field (`kind`, `maxLength`, `value`, `onSubmitted`; a `trailingIcon` inside it with `trailingLabel` and `onTrailingTap`; `obscureText` masks it)", textArea: "a text field of several lines (`multiline: true` or `maxLines` above 1)",
@@ -78,6 +78,7 @@ const GO_TEXT = {
   syncProvider: "Kino's sync-provider settings (Ajustes ▸ Conectar ▸ Proveedor), where the person picks this plugin; only for a plugin that declares `syncProvider`",
   setExperience: "asks for the light (`\"light\"`: no shadows, no effects, square corners) or the full (`\"full\"`) experience of the whole app; Kino asks the person first and changes nothing without their yes",
   installPlugin: "Kino's own install sheet for `repo` (a plain `owner/name`); nothing installs without the person's own Instalar",
+  plugin: `another plugin's screen at \`route\` with \`args\`, or its search for \`query\`, found by \`repo\` (a GitHub \`owner/name[/path]\`; a URL or an \`@ref\` is dropped); Kino installs it first, after the person's own yes, when it is missing`,
   useTheme: "turns on one of this plugin's own `appThemes` as Apariencia does, or with `theme: null` goes back to Kino's theme while one of its own is active; opens nothing, Kino shows its own toast and calls `screen` again",
 };
 const CONSENTS = () => [
@@ -116,7 +117,7 @@ export const TABLES = {
   limits: () => table(["What", "Limit"], [
     ["Manifest / entry file / icon", `${kb(c.manifest.maxBytes)} / ${kb(c.manifest.entryMaxBytes)} / ${kb(c.manifest.iconMaxBytes)}`],
     ["Memory / stack, per plugin", `${kb(c.runtime.memoryBytes)} / ${kb(c.runtime.stackBytes)}`],
-    ["Time per call", `\`search\` ${c.timeoutsMs.search / 1000} s; \`home\`, \`browse\`, \`episodes\`, \`resolve\` ${c.timeoutsMs.home / 1000} s each (\`resolve\` of a plugin Kino itself generates, from a Nuvio scraper or a Stremio addon: ${c.timeoutsMs.nuvioResolve / 1000} s); \`liveCategories\`, \`liveChannels\`, \`guide\` ${c.timeoutsMs.liveChannels / 1000} s each; \`liveSearch\` ${c.timeoutsMs.liveSearch / 1000} s; \`subtitles\` ${c.timeoutsMs.subtitles / 1000} s; \`track\` ${c.timeoutsMs.track / 1000} s (apiVersion ${c.tracking.apiVersion}); \`segments\` ${c.timeoutsMs.segments / 1000} s (apiVersion ${c.segments.apiVersion}); \`lyrics\` ${c.timeoutsMs.lyrics / 1000} s (apiVersion ${c.lyrics.apiVersion}); \`meta\` ${c.timeoutsMs.meta / 1000} s (apiVersion ${c.output.meta.apiVersion}; past it, no answer); \`section\`, \`categories\` ${c.timeoutsMs.section / 1000} s each (apiVersion 6); \`details\` ${c.timeoutsMs.details / 1000} s (apiVersion ${c.output.details.apiVersion}); \`migrate\` ${c.timeoutsMs.migrate / 1000} s; \`sign\` ${c.timeoutsMs.sign / 1000} s (and ${c.timeoutsMs.signTotal / 1000} s counting its wait); counting all your fetches and sleeps together, but not the time the person spends answering a host question for that call`],
+    ["Time per call", `\`search\` ${c.timeoutsMs.search / 1000} s; \`home\`, \`browse\`, \`episodes\`, \`resolve\` ${c.timeoutsMs.home / 1000} s each (\`resolve\` of a plugin Kino itself generates, from a Nuvio scraper or a Stremio addon: ${c.timeoutsMs.nuvioResolve / 1000} s); \`${c.prepare.export}\` ${c.timeoutsMs.prepare / 1000} s (a background call, its answer ignored); \`liveCategories\`, \`liveChannels\`, \`guide\` ${c.timeoutsMs.liveChannels / 1000} s each; \`liveSearch\` ${c.timeoutsMs.liveSearch / 1000} s; \`subtitles\` ${c.timeoutsMs.subtitles / 1000} s; \`track\` ${c.timeoutsMs.track / 1000} s (apiVersion ${c.tracking.apiVersion}); \`segments\` ${c.timeoutsMs.segments / 1000} s (apiVersion ${c.segments.apiVersion}); \`lyrics\` ${c.timeoutsMs.lyrics / 1000} s (apiVersion ${c.lyrics.apiVersion}); \`meta\` ${c.timeoutsMs.meta / 1000} s (apiVersion ${c.output.meta.apiVersion}; past it, no answer); \`section\`, \`categories\` ${c.timeoutsMs.section / 1000} s each (apiVersion 6); \`details\` ${c.timeoutsMs.details / 1000} s (apiVersion ${c.output.details.apiVersion}); \`migrate\` ${c.timeoutsMs.migrate / 1000} s; \`sign\` ${c.timeoutsMs.sign / 1000} s (and ${c.timeoutsMs.signTotal / 1000} s counting its wait); counting all your fetches and sleeps together, but not the time the person spends answering a host question for that call`],
     ["Loading the module (its top level)", `${c.timeoutsMs.load / 1000} s`],
     ["Idle sandbox", `closed after ${c.runtime.idleCloseMs / 60000} minutes without calls`],
     ["Consecutive timeouts", `${c.runtime.timeoutsBeforeUnresponsive} in a row and Kino disables the plugin ("No responde")`],
@@ -192,7 +193,7 @@ export const TABLES = {
   })),
   screenGo: () => table(["`go`", "What opens", "Sent from"], S.goShapes.map((g) => {
     if (!GO_TEXT[g]) throw new Error(`guide-tables: no description for the go shape ${g}`);
-    const from = g === "installPlugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S.goInstallPlugin.apiVersion}`
+    const from = g === "installPlugin" || g === "plugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S[g === "plugin" ? "goPlugin" : "goInstallPlugin"].apiVersion}`
       : g === "setExperience" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S.goSetExperience.apiVersion}`
       : g === "useTheme" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S.goUseTheme.apiVersion}`
       : g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel" || g === "syncProvider"
@@ -247,7 +248,7 @@ export function render(text) {
   });
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
   const [file, flag] = process.argv.slice(2);
   if (!file) {
     console.error("usage: node sdk/guide-tables.mjs <guide.md> [--check]");
